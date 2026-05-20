@@ -9,7 +9,7 @@
   "scripts": {
     "build": "cd packages/shell && bun run build && cd ../cli && bun run build",
     "test": "cd packages/shell && bun test && cd ../cli && bun test",
-    "typecheck": "cd packages/shell && bun run typecheck && cd ../cli && bun run typecheck"
+    "typecheck": "cd packages/shell && bun run build && bun run typecheck && cd ../cli && bun run typecheck"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
