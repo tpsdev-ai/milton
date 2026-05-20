@@ -14,4 +14,13 @@ describe("role-loader", () => {
     // @ts-expect-error — intentionally bad role
     expect(() => loadRole("does-not-exist")).toThrow(/unknown role/);
   });
+
+  it("rejects path-traversal role names", () => {
+    // @ts-expect-error — intentionally bad role
+    expect(() => loadRole("../../../etc")).toThrow(/invalid role name/);
+    // @ts-expect-error — intentionally bad role
+    expect(() => loadRole("ea/../../../etc")).toThrow(/invalid role name/);
+    // @ts-expect-error — intentionally bad role
+    expect(() => loadRole("ea\\..\\etc")).toThrow(/invalid role name/);
+  });
 });

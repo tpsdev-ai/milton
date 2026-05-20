@@ -26,7 +26,16 @@ const CANDIDATE_PATHS = [
   join(__dirname, "..", "..", "..", "examples", "roles"),
 ];
 
+// Role names must be lowercase alphanumerics + hyphens. Defense against
+// caller-controlled path traversal: a role like "../../../etc" would
+// escape CANDIDATE_PATHS via join(); the regex blocks any such input
+// before it reaches the filesystem.
+const ROLE_NAME = /^[a-z0-9-]+$/;
+
 export function loadRole(role: MiltonRole): RoleTemplate {
+  if (!ROLE_NAME.test(role)) {
+    throw new Error(`invalid role name: ${role} (must match ${ROLE_NAME})`);
+  }
   for (const base of CANDIDATE_PATHS) {
     const dir = join(base, role);
     if (!existsSync(dir)) continue;
