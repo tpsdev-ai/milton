@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { MiltonRole } from "./index.js";
 import { loadRole } from "./role-loader.js";
+import { flairPair, type FlairPairResult } from "./flair-pair.js";
 
 // Same character class loadRole uses — agent names are filesystem paths,
 // keep them strict-safe.
@@ -33,11 +34,21 @@ export interface InitOptions {
   bunPath?: string;
   // If true, refuse to overwrite an existing agent dir. Defaults to true.
   noClobber?: boolean;
+  // Where Ed25519 keys live. Defaults to ~/.flair/keys/. Tests override.
+  // When undefined AND skipFlair is false, defaults apply.
+  flairKeysDir?: string;
+  // If true, skip Ed25519 keypair generation entirely. For dry-runs or
+  // hostless tests that don't want the .flair dir polluted.
+  skipFlair?: boolean;
 }
 
 export interface InitResult {
   agentDir: string;
   files: string[];
+  // Populated unless skipFlair=true. Registration with Flair is a
+  // separate step (registerWithFlair) — initAgent only generates the
+  // keypair on disk to keep the function sync + filesystem-only.
+  flair?: FlairPairResult;
 }
 
 export function initAgent(opts: InitOptions): InitResult {
@@ -78,7 +89,20 @@ export function initAgent(opts: InitOptions): InitResult {
   chmodSync(binPath, 0o755);
   written.push(binPath);
 
-  return { agentDir, files: written };
+  // Flair Ed25519 keypair (registration is a separate async step;
+  // we only generate the keys on disk here to keep initAgent sync).
+  let flair: FlairPairResult | undefined;
+  if (!opts.skipFlair) {
+    flair = flairPair({
+      name: opts.name,
+      keysDir: opts.flairKeysDir,
+      // No flairUrl — caller invokes registerWithFlair() separately
+      // with the URL of their hub.
+    });
+    written.push(flair.privateKeyPath, flair.publicKeyPath);
+  }
+
+  return { agentDir, files: written, flair };
 }
 
 function renderMiltonYaml(opts: InitOptions, toolsAllow: string[]): string {
