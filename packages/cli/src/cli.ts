@@ -6,7 +6,7 @@
 // the type surface + role-template structure before we hand-roll the
 // runtime.
 
-import { initAgent, loadRole, type MiltonRole } from "@tpsdev-ai/milton-shell";
+import { MailConsumer, initAgent, loadRole, type MiltonRole } from "@tpsdev-ai/milton-shell";
 
 interface Args {
   command: string;
@@ -89,7 +89,21 @@ function run(name: string, prompt?: string): void {
 }
 
 function serve(name: string): void {
-  console.log(`[milton serve] PR-1 stub — would start mail watcher + cron loop for ${name}`);
+  const consumer = new MailConsumer({ name });
+  consumer.start();
+  console.log(`[milton serve] mail consumer running for ${name}`);
+  console.log(`  inbox:    ~/.tps/mail/${name}/`);
+  console.log(`  launcher: ~/agents/${name}/bin/${name}`);
+  console.log(`  poll:     2s · processed:0 failed:0`);
+  console.log(`Ctrl-C to stop. (Cron + Discord wire in PR-5+.)`);
+  // Keep the event loop alive
+  const shutdown = () => {
+    console.log(`\n[milton serve] stopping; stats: ${JSON.stringify(consumer.stats)}`);
+    consumer.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 function doctor(name: string): void {
