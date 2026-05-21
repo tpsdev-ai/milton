@@ -13,18 +13,28 @@
 // Exits 0 if every internal dep version matches the dependency's own
 // package.json `version`. Exits 1 with a clear report otherwise.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
 const packagesDir = join(root, "packages");
 
+// TOCTOU-safe read: try readFileSync, swallow ENOENT. Avoids the
+// check-then-read race that CodeQL flags on statSync/readFileSync pairs.
+function tryReadJSON(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 // Build a map of internal package name → version it ships at.
 const shipped = new Map();
 for (const dirent of readdirSync(packagesDir)) {
-  const pkgPath = join(packagesDir, dirent, "package.json");
-  if (!statSync(pkgPath, { throwIfNoEntry: false })?.isFile()) continue;
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const pkg = tryReadJSON(join(packagesDir, dirent, "package.json"));
+  if (!pkg) continue;
   if (pkg.name && pkg.version) {
     shipped.set(pkg.name, pkg.version);
   }
@@ -33,9 +43,8 @@ for (const dirent of readdirSync(packagesDir)) {
 // For every workspace, scan its declared deps and check internal ones.
 const problems = [];
 for (const dirent of readdirSync(packagesDir)) {
-  const pkgPath = join(packagesDir, dirent, "package.json");
-  if (!statSync(pkgPath, { throwIfNoEntry: false })?.isFile()) continue;
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const pkg = tryReadJSON(join(packagesDir, dirent, "package.json"));
+  if (!pkg) continue;
   const allDeps = {
     ...(pkg.dependencies || {}),
     ...(pkg.devDependencies || {}),
