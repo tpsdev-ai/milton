@@ -61,6 +61,7 @@ export {
 } from "./discord-bridge.js";
 export {
   type DiscordListenerOptions,
+  defaultCaptureOutput,
   startDiscordListener,
 } from "./discord-serve.js";
 export {

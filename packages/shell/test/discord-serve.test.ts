@@ -130,15 +130,49 @@ describe("startDiscordListener", () => {
     expect(runCalls[0].model).toBe("claude-sonnet-4-6");
   });
 
-  it("does not reply when captureOutput is omitted (v1 caveat)", async () => {
-    const { args, client, runCalls } = baseOpts({ captureOutput: undefined });
+  it("uses defaultCaptureOutput when captureOutput is omitted — replies from result.stdout", async () => {
+    const runFn = async (_opts: RunOptions): Promise<RunResult> => ({
+      exitCode: 0,
+      launcherPath: "/fake",
+      args: [],
+      stdout: "the agent's reply from stdout\n",
+    });
+    const { args, client } = baseOpts({ captureOutput: undefined, runFn });
     await startDiscordListener(args);
     await client.fire({
       channelId: "channel-A",
       content: "<@123> hi",
       mentionsBot: true,
     });
-    expect(runCalls.length).toBe(1);
+    expect(client.replies.length).toBe(1);
+    expect(client.replies[0].text).toBe("the agent's reply from stdout");
+  });
+
+  it("requests captureStdout when dispatching to runAgent", async () => {
+    const { args, client, runCalls } = baseOpts();
+    await startDiscordListener(args);
+    await client.fire({
+      channelId: "channel-A",
+      content: "<@123> hi",
+      mentionsBot: true,
+    });
+    expect(runCalls[0].captureStdout).toBe(true);
+  });
+
+  it("suppresses reply when defaultCaptureOutput sees empty stdout", async () => {
+    const runFn = async (): Promise<RunResult> => ({
+      exitCode: 0,
+      launcherPath: "/fake",
+      args: [],
+      stdout: "",
+    });
+    const { args, client } = baseOpts({ captureOutput: undefined, runFn });
+    await startDiscordListener(args);
+    await client.fire({
+      channelId: "channel-A",
+      content: "<@123> hi",
+      mentionsBot: true,
+    });
     expect(client.replies.length).toBe(0);
   });
 

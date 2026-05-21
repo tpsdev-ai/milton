@@ -35,6 +35,14 @@ export interface RunOptions {
   // If true, omit `--print`/`-p` and let pi run interactively. Defaults
   // to non-interactive (--print) when a prompt is provided.
   interactive?: boolean;
+  // If true, capture the agent's stdout instead of inheriting. Used by
+  // the Discord listener to harvest a reply for auto-posting. Defaults
+  // to false (stdio:inherit — output goes to the parent process).
+  //
+  // Caveat: incompatible with interactive=true. pi in interactive mode
+  // expects to drive the user's terminal; capturing stdout breaks the
+  // TUI. runAgent enforces this.
+  captureStdout?: boolean;
   // Override the agents root dir (tests). Defaults to ~/agents.
   agentsRoot?: string;
   // Override child_process.spawn (tests).
@@ -45,11 +53,19 @@ export interface RunResult {
   exitCode: number;
   launcherPath: string;
   args: readonly string[];
+  // Captured stdout, populated only when captureStdout=true. Undefined
+  // otherwise (stdio:inherit means we didn't see the output).
+  stdout?: string;
 }
 
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
   if (!AGENT_NAME.test(opts.name)) {
     throw new Error(`invalid agent name: ${JSON.stringify(opts.name)} (must match ${AGENT_NAME})`);
+  }
+  if (opts.captureStdout && opts.interactive) {
+    throw new Error(
+      "runAgent: captureStdout is incompatible with interactive (interactive needs a live TTY)",
+    );
   }
   const root = opts.agentsRoot ?? join(homedir(), "agents");
   const launcherPath = join(root, opts.name, "bin", opts.name);
@@ -74,12 +90,24 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   }
 
   const spawnFn = opts.spawnFn ?? (nodeSpawn as SpawnFn);
-  const exitCode = await spawnAndWait(spawnFn, launcherPath, args, {
-    stdio: "inherit",
+  // When capturing, pipe stdout but leave stdin + stderr inherited so the
+  // user still sees errors and any interactive prompts (e.g., model auth)
+  // route through normally. Otherwise inherit all three (existing behavior).
+  const stdio: SpawnOptions["stdio"] = opts.captureStdout
+    ? ["inherit", "pipe", "inherit"]
+    : "inherit";
+
+  const { exitCode, stdout } = await spawnAndWait(spawnFn, launcherPath, args, {
+    stdio,
     env: process.env,
   });
 
-  return { exitCode, launcherPath, args };
+  return {
+    exitCode,
+    launcherPath,
+    args,
+    ...(opts.captureStdout ? { stdout } : {}),
+  };
 }
 
 function spawnAndWait(
@@ -87,10 +115,17 @@ function spawnAndWait(
   command: string,
   args: readonly string[],
   options: SpawnOptions,
-): Promise<number> {
+): Promise<{ exitCode: number; stdout: string }> {
   return new Promise((resolve, reject) => {
     const child = spawnFn(command, args, options);
+    let stdout = "";
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
+    }
     child.on("error", reject);
-    child.on("exit", (code) => resolve(code ?? 0));
+    child.on("exit", (code) => resolve({ exitCode: code ?? 0, stdout }));
   });
 }
