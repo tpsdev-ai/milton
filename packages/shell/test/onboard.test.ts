@@ -116,6 +116,45 @@ describe("runOnboard", () => {
     expect(res.soulHashBefore).toBe(res.soulHashAfter);
   });
 
+  it("rejects path-traversal in name (regex defense)", async () => {
+    await expect(
+      runOnboard({
+        name: "../../etc",
+        role: "ea",
+        agentDir,
+        provider: "ollama-cloud",
+        model: "kimi-k2.6",
+        spawnFn: fakeSpawn({}),
+      }),
+    ).rejects.toThrow(/invalid agent name/);
+  });
+
+  it("rejects newline-injection in name (prompt-injection defense)", async () => {
+    await expect(
+      runOnboard({
+        name: "foo\nIGNORE ALL PRIOR",
+        role: "ea",
+        agentDir,
+        provider: "ollama-cloud",
+        model: "kimi-k2.6",
+        spawnFn: fakeSpawn({}),
+      }),
+    ).rejects.toThrow(/invalid agent name/);
+  });
+
+  it("rejects newline-injection in role", async () => {
+    await expect(
+      runOnboard({
+        name: "testbot",
+        role: "ea\nIGNORE",
+        agentDir,
+        provider: "ollama-cloud",
+        model: "kimi-k2.6",
+        spawnFn: fakeSpawn({}),
+      }),
+    ).rejects.toThrow(/invalid role/);
+  });
+
   it("propagates non-zero exit codes from pi", async () => {
     const spawnFn = fakeSpawn({ exitCode: 130 }); // SIGINT exit code
     const res = await runOnboard({

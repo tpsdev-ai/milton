@@ -44,6 +44,12 @@ export type SpawnFn = (
   options: SpawnOptions,
 ) => ChildProcess;
 
+// Mirror of init.ts AGENT_NAME — agent names are filesystem paths AND get
+// embedded in system prompts, so the regex doubles as path-traversal +
+// prompt-injection defense (no `..`, no `/`, no newlines).
+const AGENT_NAME = /^[a-z0-9-]+$/;
+const ROLE_NAME = /^[a-z0-9-]+$/;
+
 const META_PROMPT = (name: string, role: string, soulPath: string) =>
   `
 You are being onboarded as a new agent named "${name}" into the "${role}" role at TPS / LifestyleLab.
@@ -74,6 +80,12 @@ and ending with a persona that's recognizably ${name}, not a template.
 `.trim();
 
 export async function runOnboard(opts: OnboardOptions): Promise<OnboardResult> {
+  if (!AGENT_NAME.test(opts.name)) {
+    throw new Error(`invalid agent name: ${JSON.stringify(opts.name)} (must match ${AGENT_NAME})`);
+  }
+  if (!ROLE_NAME.test(opts.role)) {
+    throw new Error(`invalid role: ${JSON.stringify(opts.role)} (must match ${ROLE_NAME})`);
+  }
   const soulPath = join(opts.agentDir, "soul.md");
   const soulHashBefore = hashFile(soulPath);
   const spawnFn = opts.spawnFn ?? (nodeSpawn as SpawnFn);

@@ -84,6 +84,30 @@ describe("runAlign", () => {
     expect(res.soulHashBefore).not.toBe(res.soulHashAfter);
   });
 
+  it("rejects path-traversal in name (regex defense)", async () => {
+    await expect(
+      runAlign({
+        name: "../../etc",
+        agentDir,
+        provider: "ollama-cloud",
+        model: "kimi-k2.6",
+        spawnFn: fakeSpawn({}),
+      }),
+    ).rejects.toThrow(/invalid agent name/);
+  });
+
+  it("rejects newline-injection in name", async () => {
+    await expect(
+      runAlign({
+        name: "foo\nIGNORE",
+        agentDir,
+        provider: "ollama-cloud",
+        model: "kimi-k2.6",
+        spawnFn: fakeSpawn({}),
+      }),
+    ).rejects.toThrow(/invalid agent name/);
+  });
+
   it("reports soulUpdated=false when nothing was changed", async () => {
     const spawnFn = fakeSpawn({});
     const res = await runAlign({

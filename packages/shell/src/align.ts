@@ -14,6 +14,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SpawnFn } from "./onboard.js";
 
+// Same path-traversal + prompt-injection defense as runOnboard.
+const AGENT_NAME = /^[a-z0-9-]+$/;
+
 export interface AlignOptions {
   name: string;
   agentDir: string;
@@ -58,6 +61,9 @@ This is a 5-10 minute conversation, not a session. Keep it tight.
 `.trim();
 
 export async function runAlign(opts: AlignOptions): Promise<AlignResult> {
+  if (!AGENT_NAME.test(opts.name)) {
+    throw new Error(`invalid agent name: ${JSON.stringify(opts.name)} (must match ${AGENT_NAME})`);
+  }
   const soulPath = join(opts.agentDir, "soul.md");
   if (!existsSync(soulPath)) {
     throw new Error(`cannot align ${opts.name}: ${soulPath} not found — run 'bob onboard' first`);
