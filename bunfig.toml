@@ -1,0 +1,17 @@
+# Bob's bun configuration.
+#
+# Supply-chain defense via release-age policy:
+# bun.com/docs/cli/install#minimum-release-age
+#
+# 7 days catches the "compromise published, not yet detected" window.
+# Newer versions are filtered at install time; the lockfile picks an
+# older, stability-verified version automatically.
+#
+# Excludes: @types/node and typescript are too tied to the runtime
+# version we target — we want their newest releases on-demand. They're
+# also published by Microsoft + node-types maintainers (lower risk than
+# random npm authors) and locked via package.json semver ranges.
+
+[install]
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = ["@types/node", "typescript", "@biomejs/biome"]
