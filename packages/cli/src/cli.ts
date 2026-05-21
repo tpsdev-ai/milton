@@ -11,6 +11,7 @@ import {
   initAgent,
   loadRole,
   MailConsumer,
+  runAgent,
   runAlign,
   runOnboard,
 } from "@tpsdev-ai/bob-shell";
@@ -55,6 +56,7 @@ Commands:
   align <name>        Recurring check-in to refine an existing agent
                       Flags: --provider <p> --model <m> --agent-dir <dir>
   run <name> [prompt] Run one session for the named agent
+                      Flags: --model <m> --interactive
   serve <name>        Run mail watcher + cron loop as a daemon
   doctor <name>       Health check (identity, mail, channels, provider auth)
   office join <name>  Join an existing branch office
@@ -144,10 +146,15 @@ async function align(name: string, flags: Record<string, string | boolean>): Pro
   }
 }
 
-function run(name: string, prompt?: string): void {
-  console.log(
-    `[bob run] PR-1 stub — would invoke pi-coding-agent for ${name}${prompt ? ` with prompt: ${prompt}` : " (interactive)"}`,
-  );
+async function run(
+  name: string,
+  prompt: string | undefined,
+  flags: Record<string, string | boolean>,
+): Promise<number> {
+  const model = flags.model !== undefined && flags.model !== true ? String(flags.model) : undefined;
+  const interactive = flags.interactive === true;
+  const result = await runAgent({ name, prompt, model, interactive });
+  return result.exitCode;
 }
 
 function serve(name: string): void {
@@ -206,13 +213,14 @@ async function main(): Promise<number> {
         await onboard(name, args.flags);
         return 0;
       }
-      case "run":
+      case "run": {
         if (!args.positional[0]) {
           console.error("bob run: missing <name>");
           return 2;
         }
-        run(args.positional[0], args.positional.slice(1).join(" ") || undefined);
-        return 0;
+        const prompt = args.positional.slice(1).join(" ") || undefined;
+        return await run(args.positional[0], prompt, args.flags);
+      }
       case "serve":
         if (!args.positional[0]) {
           console.error("bob serve: missing <name>");
