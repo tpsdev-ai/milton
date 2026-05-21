@@ -1,11 +1,11 @@
 {
-  "name": "@tpsdev-ai/milton",
+  "name": "@tpsdev-ai/bob",
   "version": "0.0.0",
   "type": "module",
-  "description": "Milton CLI — bootstrap and run Milton-shaped office agents.",
+  "description": "Bob CLI — bootstrap and run Bob-shaped office agents.",
   "main": "dist/cli.js",
   "bin": {
-    "milton": "./bin/milton"
+    "bob": "./bin/bob"
   },
   "scripts": {
     "build": "tsc -p .",
@@ -13,7 +13,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@tpsdev-ai/milton-shell": "workspace:*"
+    "@tpsdev-ai/bob-shell": "workspace:*"
   },
   "license": "Apache-2.0",
   "files": [

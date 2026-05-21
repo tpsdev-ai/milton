@@ -1,10 +1,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { MiltonRole } from "./index.js";
+import type { BobRole } from "./index.js";
 
 export interface RoleTemplate {
-  role: MiltonRole;
+  role: BobRole;
   soul: string; // markdown persona file contents
   tools: {
     allow: string[];
@@ -16,8 +16,8 @@ export interface RoleTemplate {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Roles ship in examples/roles/<role>/ relative to repo root. The shell
-// resolves them via a lookup table so a Milton install (npm) finds them
-// in node_modules/@tpsdev-ai/milton-shell/roles/, and a workspace install
+// resolves them via a lookup table so a Bob install (npm) finds them
+// in node_modules/@tpsdev-ai/bob-shell/roles/, and a workspace install
 // finds them in ../../examples/roles/.
 const CANDIDATE_PATHS = [
   // Built into the package (post-npm-publish)
@@ -32,7 +32,7 @@ const CANDIDATE_PATHS = [
 // before it reaches the filesystem.
 const ROLE_NAME = /^[a-z0-9-]+$/;
 
-export function loadRole(role: MiltonRole): RoleTemplate {
+export function loadRole(role: BobRole): RoleTemplate {
   if (!ROLE_NAME.test(role)) {
     throw new Error(`invalid role name: ${role} (must match ${ROLE_NAME})`);
   }

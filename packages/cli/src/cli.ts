@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Milton CLI — milton <subcommand> [args]
+// Bob CLI — bob <subcommand> [args]
 //
 // PR-1 ships the surface stubs. Each subcommand prints what it WILL do
 // in PR-2+ and exits 0. This is intentional: it gates K&S review on
 // the type surface + role-template structure before we hand-roll the
 // runtime.
 
-import { MailConsumer, initAgent, loadRole, type MiltonRole } from "@tpsdev-ai/milton-shell";
+import { MailConsumer, initAgent, loadRole, type BobRole } from "@tpsdev-ai/bob-shell";
 
 interface Args {
   command: string;
@@ -37,12 +37,12 @@ function parseArgs(argv: string[]): Args {
 }
 
 function help(): void {
-  console.log(`Milton — moldable office-agent shell.
+  console.log(`Bob — moldable office-agent shell.
 
-Usage: milton <command> [args]
+Usage: bob <command> [args]
 
 Commands:
-  init <name>         Bootstrap a new Milton-shaped agent
+  init <name>         Bootstrap a new Bob-shaped agent
                       Flags: --role <r> --provider <p> --model <m>
                              --dry-run --force
   run <name> [prompt] Run one session for the named agent
@@ -55,7 +55,7 @@ Roles: ea | writer | reviewer | coder | qa | custom`);
 }
 
 function init(name: string, flags: Record<string, string | boolean>): void {
-  const role = (flags.role ?? "custom") as MiltonRole;
+  const role = (flags.role ?? "custom") as BobRole;
   const provider = String(flags.provider ?? "ollama-cloud");
   const model = String(flags.model ?? "kimi-k2.6");
   const dryRun = flags["dry-run"] === true;
@@ -64,7 +64,7 @@ function init(name: string, flags: Record<string, string | boolean>): void {
   if (dryRun) {
     // Validate role exists, print plan, exit without writing.
     const template = loadRole(role);
-    console.log(`[milton init] PLAN (--dry-run):
+    console.log(`[bob init] PLAN (--dry-run):
   agent.id        = ${name}
   agent.role      = ${role}
   provider.name   = ${provider}
@@ -72,33 +72,33 @@ function init(name: string, flags: Record<string, string | boolean>): void {
   soul (from template, ${template.soul.length} chars) → ~/agents/${name}/soul.md
   tools.allow     = ${template.tools.allow.join(", ")}
   bin/launcher    → ~/agents/${name}/bin/${name}
-  milton.yaml     → ~/agents/${name}/milton.yaml`);
+  bob.yaml     → ~/agents/${name}/bob.yaml`);
     return;
   }
 
   const result = initAgent({ name, role, provider, model, noClobber: !force });
-  console.log(`[milton init] wrote ${result.files.length} files to ${result.agentDir}`);
+  console.log(`[bob init] wrote ${result.files.length} files to ${result.agentDir}`);
   for (const f of result.files) console.log(`  ${f}`);
   console.log(`\nNext: chmod-verified launcher is at ${result.agentDir}/bin/${name}.`);
-  console.log(`Edit ${result.agentDir}/milton.yaml or ${result.agentDir}/soul.md to customize.`);
+  console.log(`Edit ${result.agentDir}/bob.yaml or ${result.agentDir}/soul.md to customize.`);
   console.log(`Flair pair + TPS mail inbox are PR-3 work — not wired yet.`);
 }
 
 function run(name: string, prompt?: string): void {
-  console.log(`[milton run] PR-1 stub — would invoke pi-coding-agent for ${name}${prompt ? ` with prompt: ${prompt}` : " (interactive)"}`);
+  console.log(`[bob run] PR-1 stub — would invoke pi-coding-agent for ${name}${prompt ? ` with prompt: ${prompt}` : " (interactive)"}`);
 }
 
 function serve(name: string): void {
   const consumer = new MailConsumer({ name });
   consumer.start();
-  console.log(`[milton serve] mail consumer running for ${name}`);
+  console.log(`[bob serve] mail consumer running for ${name}`);
   console.log(`  inbox:    ~/.tps/mail/${name}/`);
   console.log(`  launcher: ~/agents/${name}/bin/${name}`);
   console.log(`  poll:     2s · processed:0 failed:0`);
   console.log(`Ctrl-C to stop. (Cron + Discord wire in PR-5+.)`);
   // Keep the event loop alive
   const shutdown = () => {
-    console.log(`\n[milton serve] stopping; stats: ${JSON.stringify(consumer.stats)}`);
+    console.log(`\n[bob serve] stopping; stats: ${JSON.stringify(consumer.stats)}`);
     consumer.stop();
     process.exit(0);
   };
@@ -107,7 +107,7 @@ function serve(name: string): void {
 }
 
 function doctor(name: string): void {
-  console.log(`[milton doctor] PR-1 stub — would check identity, mail, channels, provider auth for ${name}`);
+  console.log(`[bob doctor] PR-1 stub — would check identity, mail, channels, provider auth for ${name}`);
 }
 
 function main(): number {
@@ -116,20 +116,20 @@ function main(): number {
     switch (args.command) {
       case "init": {
         const name = args.positional[0];
-        if (!name) { console.error("milton init: missing <name>"); return 2; }
+        if (!name) { console.error("bob init: missing <name>"); return 2; }
         init(name, args.flags);
         return 0;
       }
       case "run":
-        if (!args.positional[0]) { console.error("milton run: missing <name>"); return 2; }
+        if (!args.positional[0]) { console.error("bob run: missing <name>"); return 2; }
         run(args.positional[0], args.positional.slice(1).join(" ") || undefined);
         return 0;
       case "serve":
-        if (!args.positional[0]) { console.error("milton serve: missing <name>"); return 2; }
+        if (!args.positional[0]) { console.error("bob serve: missing <name>"); return 2; }
         serve(args.positional[0]);
         return 0;
       case "doctor":
-        if (!args.positional[0]) { console.error("milton doctor: missing <name>"); return 2; }
+        if (!args.positional[0]) { console.error("bob doctor: missing <name>"); return 2; }
         doctor(args.positional[0]);
         return 0;
       case "help":
@@ -138,12 +138,12 @@ function main(): number {
         help();
         return 0;
       default:
-        console.error(`milton: unknown command '${args.command}'. Run 'milton help'.`);
+        console.error(`bob: unknown command '${args.command}'. Run 'bob help'.`);
         return 2;
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`milton: ${msg}`);
+    console.error(`bob: ${msg}`);
     return 1;
   }
 }

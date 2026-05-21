@@ -3,11 +3,11 @@
 //
 // Built around an injected DiscordClient interface so tests stay
 // dep-free. Production wiring binds it to discord.js (added as an
-// optional dep — milton-shell stays importable without it for callers
+// optional dep — bob-shell stays importable without it for callers
 // who don't want Discord).
 //
 // PR-5 ships the bridge abstraction + the message → dispatch flow.
-// PR-6 wires cron + a `milton serve --discord` flag.
+// PR-6 wires cron + a `bob serve --discord` flag.
 
 export interface DiscordMessage {
   id: string;

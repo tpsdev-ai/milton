@@ -1,11 +1,11 @@
-// discord.js binding for milton-shell's DiscordClient interface.
+// discord.js binding for bob-shell's DiscordClient interface.
 //
 // Importing this package pulls discord.js (~30MB of WS + REST). Agents
 // that don't need Discord shouldn't depend on this package — keep the
 // shell-only install slim.
 
 import { Client, GatewayIntentBits, Events, type Message } from "discord.js";
-import type { DiscordClient, DiscordMessage } from "@tpsdev-ai/milton-shell";
+import type { DiscordClient, DiscordMessage } from "@tpsdev-ai/bob-shell";
 
 export interface DiscordJsClientOptions {
   // Bot token. Read from a secret file in production; passed inline in
