@@ -51,10 +51,6 @@ export interface BobConfig {
   cron?: CronEntry[];
 }
 
-export { loadRole, type RoleTemplate } from "./role-loader.js";
-export { initAgent, type InitOptions, type InitResult } from "./init.js";
-export { flairPair, registerWithFlair, type FlairPairOptions, type FlairPairResult } from "./flair-pair.js";
-export { MailConsumer, type MailConsumerOptions, type MailMessage, type MailConsumerStats } from "./mail-consumer.js";
 export {
   DiscordBridge,
   type DiscordBridgeOptions,
@@ -62,3 +58,17 @@ export {
   type DiscordClient,
   type DiscordMessage,
 } from "./discord-bridge.js";
+export {
+  type FlairPairOptions,
+  type FlairPairResult,
+  flairPair,
+  registerWithFlair,
+} from "./flair-pair.js";
+export { type InitOptions, type InitResult, initAgent } from "./init.js";
+export {
+  MailConsumer,
+  type MailConsumerOptions,
+  type MailConsumerStats,
+  type MailMessage,
+} from "./mail-consumer.js";
+export { loadRole, type RoleTemplate } from "./role-loader.js";

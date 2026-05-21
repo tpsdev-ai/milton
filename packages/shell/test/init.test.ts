@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { initAgent } from "../src/init.js";
-import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initAgent } from "../src/init.js";
 
 describe("initAgent", () => {
   let tmpRoot: string;
@@ -93,21 +93,23 @@ describe("initAgent", () => {
   });
 
   it("propagates loadRole's invalid-role rejection", () => {
-    expect(() => initAgent({
-      ...baseOpts(),
-      // @ts-expect-error — bad role
-      role: "../../../etc",
-    })).toThrow(/invalid role name/);
+    expect(() =>
+      initAgent({
+        ...baseOpts(),
+        // @ts-expect-error — bad role
+        role: "../../../etc",
+      }),
+    ).toThrow(/invalid role name/);
   });
 
   it("generates a Flair Ed25519 keypair by default", () => {
     const res = initAgent(baseOpts());
     expect(res.flair).toBeDefined();
     expect(res.flair?.publicKeyBase64.length).toBe(44);
-    expect(existsSync(res.flair!.privateKeyPath)).toBe(true);
-    expect(existsSync(res.flair!.publicKeyPath)).toBe(true);
-    expect(res.files).toContain(res.flair!.privateKeyPath);
-    expect(res.files).toContain(res.flair!.publicKeyPath);
+    expect(existsSync(res.flair?.privateKeyPath)).toBe(true);
+    expect(existsSync(res.flair?.publicKeyPath)).toBe(true);
+    expect(res.files).toContain(res.flair?.privateKeyPath);
+    expect(res.files).toContain(res.flair?.publicKeyPath);
   });
 
   it("skips Flair keypair when skipFlair=true", () => {
@@ -120,7 +122,7 @@ describe("initAgent", () => {
 
   it("private key is mode 0600", () => {
     const res = initAgent(baseOpts());
-    const mode = statSync(res.flair!.privateKeyPath).mode & 0o777;
+    const mode = statSync(res.flair?.privateKeyPath).mode & 0o777;
     expect(mode).toBe(0o600);
   });
 });

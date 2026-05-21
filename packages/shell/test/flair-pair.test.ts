@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { flairPair, registerWithFlair } from "../src/flair-pair.js";
-import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { flairPair, registerWithFlair } from "../src/flair-pair.js";
 
 describe("flairPair (keypair generation)", () => {
   let tmpKeys: string;
@@ -75,7 +75,7 @@ describe("registerWithFlair (HTTP roundtrip)", () => {
         publicKeyBase64: "AAAA",
         flairUrl: "http://127.0.0.1:9926",
         adminPassFile: "/nonexistent/path",
-      })
+      }),
     ).rejects.toThrow(/admin pass file missing/);
   });
 });

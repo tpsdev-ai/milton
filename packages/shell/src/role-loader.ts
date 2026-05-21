@@ -1,5 +1,5 @@
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BobRole } from "./index.js";
 
@@ -43,7 +43,10 @@ export function loadRole(role: BobRole): RoleTemplate {
     const configPath = join(dir, "role.json");
     if (!existsSync(soulPath) || !existsSync(configPath)) continue;
     const soul = readFileSync(soulPath, "utf8");
-    const config = JSON.parse(readFileSync(configPath, "utf8")) as Omit<RoleTemplate, "soul" | "role">;
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as Omit<
+      RoleTemplate,
+      "soul" | "role"
+    >;
     return { role, soul, ...config };
   }
   throw new Error(`unknown role: ${role}. Looked in: ${CANDIDATE_PATHS.join(", ")}`);

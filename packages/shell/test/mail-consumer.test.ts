@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { MailConsumer, type MailMessage } from "../src/mail-consumer.js";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MailConsumer, type MailMessage } from "../src/mail-consumer.js";
 
 describe("MailConsumer", () => {
   let tmpInbox: string;
@@ -10,13 +10,16 @@ describe("MailConsumer", () => {
 
   const writeMail = (name: string, body: string): string => {
     const path = join(tmpInbox, "new", `${name}.json`);
-    writeFileSync(path, JSON.stringify({
-      id: name,
-      from: "flint",
-      to: "testbot",
-      body,
-      timestamp: new Date().toISOString(),
-    }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        id: name,
+        from: "flint",
+        to: "testbot",
+        body,
+        timestamp: new Date().toISOString(),
+      }),
+    );
     return path;
   };
 
@@ -33,7 +36,9 @@ describe("MailConsumer", () => {
   });
 
   it("rejects invalid agent names", () => {
-    expect(() => new MailConsumer({ name: "../etc", inboxRoot: tmpInbox })).toThrow(/invalid agent name/);
+    expect(() => new MailConsumer({ name: "../etc", inboxRoot: tmpInbox })).toThrow(
+      /invalid agent name/,
+    );
   });
 
   it("processes a new mail message and moves it to cur/", async () => {
@@ -44,7 +49,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async (msg) => { seen.push(msg); },
+      dispatch: async (msg) => {
+        seen.push(msg);
+      },
     });
     consumer.start();
     await consumer.poll();
@@ -67,7 +74,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async (msg) => { seen.push(msg); },
+      dispatch: async (msg) => {
+        seen.push(msg);
+      },
     });
     consumer.start();
     await consumer.poll();
@@ -85,7 +94,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async (msg) => { seen.push(msg); },
+      dispatch: async (msg) => {
+        seen.push(msg);
+      },
     });
     consumer.start();
     await consumer.poll();
@@ -103,7 +114,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async (msg) => { seen.push(msg); },
+      dispatch: async (msg) => {
+        seen.push(msg);
+      },
     });
     consumer.start();
     // Mail arrives AFTER start
@@ -122,7 +135,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async () => { throw new Error("dispatch boom"); },
+      dispatch: async () => {
+        throw new Error("dispatch boom");
+      },
     });
     consumer.start();
     await consumer.poll();
@@ -142,7 +157,10 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async () => { attempts += 1; throw new Error("nope"); },
+      dispatch: async () => {
+        attempts += 1;
+        throw new Error("nope");
+      },
     });
     consumer.start();
     await consumer.poll();
@@ -182,7 +200,9 @@ describe("MailConsumer", () => {
       name: "testbot",
       inboxRoot: tmpInbox,
       lockFile: join(tmpLock, "testbot.lock"),
-      dispatch: async (msg) => { seen.push(msg); },
+      dispatch: async (msg) => {
+        seen.push(msg);
+      },
     });
     consumer.start();
     await consumer.poll();

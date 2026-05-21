@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { DiscordJsClient } from "../src/index.js";
 
 // PR-6 keeps tests light — discord.js requires a real WS connection

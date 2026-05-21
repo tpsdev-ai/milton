@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Root + per-workspace package.json
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      typescript-ecosystem:
+        patterns:
+          - "typescript"
+          - "@types/*"
+      biome:
+        patterns:
+          - "@biomejs/*"
+      discord:
+        patterns:
+          - "discord.js"
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

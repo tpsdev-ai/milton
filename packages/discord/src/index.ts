@@ -4,8 +4,8 @@
 // that don't need Discord shouldn't depend on this package — keep the
 // shell-only install slim.
 
-import { Client, GatewayIntentBits, Events, type Message } from "discord.js";
 import type { DiscordClient, DiscordMessage } from "@tpsdev-ai/bob-shell";
+import { Client, Events, GatewayIntentBits, type Message } from "discord.js";
 
 export interface DiscordJsClientOptions {
   // Bot token. Read from a secret file in production; passed inline in
@@ -72,7 +72,7 @@ export class DiscordJsClient implements DiscordClient {
 
   async reply(channelId: string, text: string, opts?: { replyTo?: string }): Promise<void> {
     const channel = await this.client.channels.fetch(channelId);
-    if (!channel || !channel.isTextBased() || !("send" in channel)) {
+    if (!channel?.isTextBased() || !("send" in channel)) {
       throw new Error(`channel ${channelId} not text-based or not fetchable`);
     }
     await (channel as unknown as { send: (payload: unknown) => Promise<unknown> }).send({
