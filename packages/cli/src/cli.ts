@@ -6,7 +6,7 @@
 // the type surface + role-template structure before we hand-roll the
 // runtime.
 
-import { MailConsumer, initAgent, loadRole, type BobRole } from "@tpsdev-ai/bob-shell";
+import { type BobRole, initAgent, loadRole, MailConsumer } from "@tpsdev-ai/bob-shell";
 
 interface Args {
   command: string;
@@ -78,7 +78,9 @@ function onboard(name: string, flags: Record<string, string | boolean>): void {
   }
 
   const result = initAgent({ name, role, provider, model, noClobber: !force });
-  console.log(`[bob onboard] hired ${name} into the ${role} role — wrote ${result.files.length} files`);
+  console.log(
+    `[bob onboard] hired ${name} into the ${role} role — wrote ${result.files.length} files`,
+  );
   for (const f of result.files) console.log(`  ${f}`);
   console.log(`\nFirst conversation (PR-9): bob align ${name}`);
   console.log(`Or dispatch directly: bob run ${name} "<prompt>"`);
@@ -98,7 +100,9 @@ function align(name: string): void {
 }
 
 function run(name: string, prompt?: string): void {
-  console.log(`[bob run] PR-1 stub — would invoke pi-coding-agent for ${name}${prompt ? ` with prompt: ${prompt}` : " (interactive)"}`);
+  console.log(
+    `[bob run] PR-1 stub — would invoke pi-coding-agent for ${name}${prompt ? ` with prompt: ${prompt}` : " (interactive)"}`,
+  );
 }
 
 function serve(name: string): void {
@@ -120,7 +124,9 @@ function serve(name: string): void {
 }
 
 function doctor(name: string): void {
-  console.log(`[bob doctor] PR-1 stub — would check identity, mail, channels, provider auth for ${name}`);
+  console.log(
+    `[bob doctor] PR-1 stub — would check identity, mail, channels, provider auth for ${name}`,
+  );
 }
 
 function main(): number {
@@ -129,34 +135,52 @@ function main(): number {
     switch (args.command) {
       case "onboard": {
         const name = args.positional[0];
-        if (!name) { console.error("bob onboard: missing <name>"); return 2; }
+        if (!name) {
+          console.error("bob onboard: missing <name>");
+          return 2;
+        }
         onboard(name, args.flags);
         return 0;
       }
       case "align": {
         const name = args.positional[0];
-        if (!name) { console.error("bob align: missing <name>"); return 2; }
+        if (!name) {
+          console.error("bob align: missing <name>");
+          return 2;
+        }
         align(name);
         return 0;
       }
       case "init": {
         // Soft alias — older docs may still say `bob init`. Forward to onboard.
         const name = args.positional[0];
-        if (!name) { console.error("bob init: missing <name> (note: `bob init` is now `bob onboard`)"); return 2; }
+        if (!name) {
+          console.error("bob init: missing <name> (note: `bob init` is now `bob onboard`)");
+          return 2;
+        }
         console.error("bob init: renamed to `bob onboard`. Forwarding…");
         onboard(name, args.flags);
         return 0;
       }
       case "run":
-        if (!args.positional[0]) { console.error("bob run: missing <name>"); return 2; }
+        if (!args.positional[0]) {
+          console.error("bob run: missing <name>");
+          return 2;
+        }
         run(args.positional[0], args.positional.slice(1).join(" ") || undefined);
         return 0;
       case "serve":
-        if (!args.positional[0]) { console.error("bob serve: missing <name>"); return 2; }
+        if (!args.positional[0]) {
+          console.error("bob serve: missing <name>");
+          return 2;
+        }
         serve(args.positional[0]);
         return 0;
       case "doctor":
-        if (!args.positional[0]) { console.error("bob doctor: missing <name>"); return 2; }
+        if (!args.positional[0]) {
+          console.error("bob doctor: missing <name>");
+          return 2;
+        }
         doctor(args.positional[0]);
         return 0;
       case "help":

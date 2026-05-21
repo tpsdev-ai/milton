@@ -12,10 +12,19 @@
 // or Claude or anything — it just shells out to bin/<name> with the mail
 // body as the prompt. The agent's launcher decides how to interpret it.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { spawn } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface MailMessage {
   id: string;
@@ -50,7 +59,9 @@ export interface MailConsumerStats {
 const AGENT_NAME = /^[a-z0-9-]+$/;
 
 export class MailConsumer {
-  private readonly opts: Required<Omit<MailConsumerOptions, "dispatch">> & { dispatch?: MailConsumerOptions["dispatch"] };
+  private readonly opts: Required<Omit<MailConsumerOptions, "dispatch">> & {
+    dispatch?: MailConsumerOptions["dispatch"];
+  };
   private readonly seenFiles = new Set<string>();
   private running = false;
   private timer?: ReturnType<typeof setInterval>;
@@ -62,7 +73,8 @@ export class MailConsumer {
       throw new Error(`invalid agent name: ${opts.name} (must match ${AGENT_NAME})`);
     }
     const inboxRoot = opts.inboxRoot ?? join(homedir(), ".tps", "mail", opts.name);
-    const launcherPath = opts.launcherPath ?? join(homedir(), "agents", opts.name, "bin", opts.name);
+    const launcherPath =
+      opts.launcherPath ?? join(homedir(), "agents", opts.name, "bin", opts.name);
     this.opts = {
       name: opts.name,
       inboxRoot,
@@ -87,7 +99,9 @@ export class MailConsumer {
     this.stats.startedAt = Date.now();
     this.running = true;
     this.timer = setInterval(() => {
-      this.poll().catch(() => { /* swallow — recoverable; see stats.failed */ });
+      this.poll().catch(() => {
+        /* swallow — recoverable; see stats.failed */
+      });
     }, this.opts.pollIntervalMs);
   }
 
@@ -106,7 +120,9 @@ export class MailConsumer {
     this.inFlight = true;
     try {
       const newDir = join(this.opts.inboxRoot, "new");
-      const files = readdirSync(newDir).filter((f) => !this.seenFiles.has(f) && f.endsWith(".json"));
+      const files = readdirSync(newDir).filter(
+        (f) => !this.seenFiles.has(f) && f.endsWith(".json"),
+      );
       for (const file of files) {
         this.seenFiles.add(file);
         const path = join(newDir, file);
@@ -115,7 +131,7 @@ export class MailConsumer {
           await this.handle(msg);
           this.moveToCur(file);
           this.stats.processed += 1;
-        } catch (err) {
+        } catch (_err) {
           this.stats.failed += 1;
           // Leave the file in new/ but keep it in seenFiles so we don't
           // hot-loop on a poison message. Re-deliver after restart.

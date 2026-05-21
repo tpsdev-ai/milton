@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { DiscordBridge, type DiscordClient, type DiscordMessage } from "../src/discord-bridge.js";
 
 interface ReplyRecord {
@@ -16,8 +16,12 @@ class StubClient implements DiscordClient {
   on(_event: "message", handler: (msg: DiscordMessage) => void): void {
     this.handler = handler;
   }
-  async connect(): Promise<void> { this.connected = true; }
-  async disconnect(): Promise<void> { this.disconnected = true; }
+  async connect(): Promise<void> {
+    this.connected = true;
+  }
+  async disconnect(): Promise<void> {
+    this.disconnected = true;
+  }
   async reply(channelId: string, text: string, opts?: { replyTo?: string }): Promise<void> {
     this.replies.push({ channelId, text, replyTo: opts?.replyTo });
   }
@@ -45,11 +49,14 @@ describe("DiscordBridge", () => {
   });
 
   it("rejects an empty listenChannelIds", () => {
-    expect(() => new DiscordBridge({
-      listenChannelIds: [],
-      client,
-      dispatch: async () => undefined,
-    })).toThrow(/listenChannelIds/);
+    expect(
+      () =>
+        new DiscordBridge({
+          listenChannelIds: [],
+          client,
+          dispatch: async () => undefined,
+        }),
+    ).toThrow(/listenChannelIds/);
   });
 
   it("connects + disconnects via the client", async () => {
@@ -93,7 +100,10 @@ describe("DiscordBridge", () => {
     const bridge = new DiscordBridge({
       listenChannelIds: ["channel-A"],
       client,
-      dispatch: async (msg) => { seen.push(msg); return undefined; },
+      dispatch: async (msg) => {
+        seen.push(msg);
+        return undefined;
+      },
     });
     await bridge.start();
     await bridge.handle(baseMsg({ channelId: "channel-OTHER" }));
@@ -107,7 +117,10 @@ describe("DiscordBridge", () => {
     const bridge = new DiscordBridge({
       listenChannelIds: ["channel-A"],
       client,
-      dispatch: async (msg) => { seen.push(msg); return undefined; },
+      dispatch: async (msg) => {
+        seen.push(msg);
+        return undefined;
+      },
     });
     await bridge.start();
     await bridge.handle(baseMsg({ mentionsBot: false }));
@@ -121,7 +134,10 @@ describe("DiscordBridge", () => {
       listenChannelIds: ["channel-A"],
       dispatchAll: true,
       client,
-      dispatch: async (msg) => { seen.push(msg); return undefined; },
+      dispatch: async (msg) => {
+        seen.push(msg);
+        return undefined;
+      },
     });
     await bridge.start();
     await bridge.handle(baseMsg({ mentionsBot: false }));
@@ -145,7 +161,9 @@ describe("DiscordBridge", () => {
     const bridge = new DiscordBridge({
       listenChannelIds: ["channel-A"],
       client,
-      dispatch: async () => { throw new Error("boom"); },
+      dispatch: async () => {
+        throw new Error("boom");
+      },
     });
     await bridge.start();
     // handle() should propagate the error; the on('message') wrapper catches it.

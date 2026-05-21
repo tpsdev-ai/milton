@@ -11,9 +11,9 @@
 // against a stub.
 
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 const AGENT_NAME = /^[a-z0-9-]+$/;
 
@@ -63,7 +63,7 @@ export function flairPair(opts: FlairPairOptions): FlairPairResult {
     publicKeyBase64 = pubRawBytes.toString("base64");
     writeFileSync(privPath, privPem);
     chmodSync(privPath, 0o600);
-    writeFileSync(pubPath, publicKeyBase64 + "\n");
+    writeFileSync(pubPath, `${publicKeyBase64}\n`);
     chmodSync(pubPath, 0o644);
   }
 
@@ -127,7 +127,7 @@ export async function registerWithFlair(args: {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Basic ${auth}`,
+      Authorization: `Basic ${auth}`,
     },
     body,
   });

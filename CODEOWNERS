@@ -1,0 +1,18 @@
+# Bob CODEOWNERS — auto-requests reviews from the right owners
+# Format: <path-pattern> <owner> [<owner> ...]
+# Owners need read+ access. See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Catch-all — Flint owns the architecture, K&S do the ensemble review
+* @tps-flint @tps-kern @tps-sherlock
+
+# Security-sensitive surfaces — explicit Sherlock gate
+/packages/shell/src/flair-pair.ts   @tps-sherlock @tps-flint
+/packages/shell/src/init.ts         @tps-sherlock @tps-flint
+/packages/shell/src/role-loader.ts  @tps-sherlock @tps-flint
+/packages/shell/src/mail-consumer.ts @tps-sherlock @tps-flint
+/packages/discord/                  @tps-sherlock @tps-flint
+
+# CI + supply-chain configs — both K&S
+/.github/                           @tps-sherlock @tps-kern @tps-flint
+/biome.json                         @tps-kern @tps-flint
+/package.json                       @tps-sherlock @tps-kern @tps-flint

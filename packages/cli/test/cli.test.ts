@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -20,7 +20,9 @@ describe("bob CLI", () => {
 
   it("onboard fails for unknown role", () => {
     try {
-      execSync(`node ${CLI} onboard testbot --role nonexistent --dry-run 2>&1`, { encoding: "utf8" });
+      execSync(`node ${CLI} onboard testbot --role nonexistent --dry-run 2>&1`, {
+        encoding: "utf8",
+      });
       throw new Error("expected non-zero exit");
     } catch (err: any) {
       expect(err.stdout || err.message).toContain("unknown role");

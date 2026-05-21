@@ -12,12 +12,12 @@
 //     ├── memory/             # local memory cache (empty)
 //     └── .pi-agent/          # pi-coding-agent state (empty; populated on first run)
 
-import { mkdirSync, writeFileSync, chmodSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { type FlairPairResult, flairPair } from "./flair-pair.js";
 import type { BobRole } from "./index.js";
 import { loadRole } from "./role-loader.js";
-import { flairPair, type FlairPairResult } from "./flair-pair.js";
 
 // Same character class loadRole uses — agent names are filesystem paths,
 // keep them strict-safe.
