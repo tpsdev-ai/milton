@@ -79,3 +79,4 @@ export {
   type SpawnFn,
 } from "./onboard.js";
 export { loadRole, type RoleTemplate } from "./role-loader.js";
+export { type RunOptions, type RunResult, runAgent } from "./run.js";
