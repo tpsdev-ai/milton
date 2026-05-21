@@ -8,14 +8,31 @@ import { runAgent } from "../src/run.js";
 
 function fakeSpawn(opts: {
   exitCode?: number;
+  stdoutChunks?: string[];
   onSpawn?: (cmd: string, args: readonly string[]) => void;
 }): SpawnFn {
   return (cmd, args) => {
-    const ee = new EventEmitter() as EventEmitter & { on: EventEmitter["on"] };
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout?: EventEmitter & { setEncoding?: (enc: string) => void };
+    };
+    if (opts.stdoutChunks) {
+      const stdoutStream = new EventEmitter() as EventEmitter & {
+        setEncoding?: (enc: string) => void;
+      };
+      stdoutStream.setEncoding = () => {};
+      proc.stdout = stdoutStream;
+    }
     opts.onSpawn?.(cmd, args as readonly string[]);
-    queueMicrotask(() => ee.emit("exit", opts.exitCode ?? 0));
+    queueMicrotask(() => {
+      if (opts.stdoutChunks && proc.stdout) {
+        for (const chunk of opts.stdoutChunks) {
+          proc.stdout.emit("data", chunk);
+        }
+      }
+      proc.emit("exit", opts.exitCode ?? 0);
+    });
     // biome-ignore lint/suspicious/noExplicitAny: minimal ChildProcess stub
-    return ee as any;
+    return proc as any;
   };
 }
 
@@ -125,5 +142,40 @@ describe("runAgent", () => {
     const spawnFn = fakeSpawn({ exitCode: 42 });
     const res = await runAgent({ name: "testbot", agentsRoot, spawnFn });
     expect(res.exitCode).toBe(42);
+  });
+
+  describe("captureStdout", () => {
+    it("captures stdout when captureStdout=true", async () => {
+      const spawnFn = fakeSpawn({
+        stdoutChunks: ["partial reply ", "more reply\n"],
+      });
+      const res = await runAgent({
+        name: "testbot",
+        prompt: "hi",
+        captureStdout: true,
+        agentsRoot,
+        spawnFn,
+      });
+      expect(res.stdout).toBe("partial reply more reply\n");
+    });
+
+    it("omits stdout from result when captureStdout=false (default)", async () => {
+      const spawnFn = fakeSpawn({});
+      const res = await runAgent({ name: "testbot", prompt: "hi", agentsRoot, spawnFn });
+      expect(res.stdout).toBeUndefined();
+    });
+
+    it("rejects captureStdout combined with interactive (incompatible)", async () => {
+      await expect(
+        runAgent({
+          name: "testbot",
+          prompt: "hi",
+          captureStdout: true,
+          interactive: true,
+          agentsRoot,
+          spawnFn: fakeSpawn({}),
+        }),
+      ).rejects.toThrow(/captureStdout is incompatible with interactive/);
+    });
   });
 });

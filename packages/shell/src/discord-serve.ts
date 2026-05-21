@@ -35,16 +35,24 @@ export interface DiscordListenerOptions {
   model?: string;
   // Inject runAgent in tests; default uses the real one.
   runFn?: (opts: RunOptions) => Promise<RunResult>;
-  // Capture stdout from the dispatched session so we can post it as a
-  // reply. Default reads from the runFn's result stream — tests inject
-  // a value directly. Production wiring captures from --print output.
-  //
-  // NOTE: this is the simplest workable version. runAgent currently uses
-  // stdio:inherit, so output goes to the process stdout, not back to
-  // this caller. Production callers should pipe through a stdout capture
-  // layer; v1 of this listener may not produce useful replies until that
-  // capture layer is wired. Marked as a follow-up in the dispatch comment.
-  captureOutput?: (result: RunResult) => Promise<string>;
+  // Translate a runAgent result into a Discord reply string. The default
+  // reads result.stdout (captured via runAgent's captureStdout=true) and
+  // trims it for Discord's 2000-char message limit. Tests override to
+  // inject canned replies. Return undefined to suppress the reply.
+  captureOutput?: (result: RunResult) => Promise<string | undefined>;
+}
+
+// Discord message limit (per channels.send). Replies longer than this
+// get truncated with a marker. Real-world usage is well under this
+// for EA-style brief replies; the cap is defensive against the model
+// occasionally returning a wall of text.
+const DISCORD_MAX_REPLY_CHARS = 1900;
+
+export function defaultCaptureOutput(result: RunResult): string | undefined {
+  const raw = (result.stdout ?? "").trim();
+  if (raw.length === 0) return undefined;
+  if (raw.length <= DISCORD_MAX_REPLY_CHARS) return raw;
+  return `${raw.slice(0, DISCORD_MAX_REPLY_CHARS)}…\n\n[reply truncated at ${DISCORD_MAX_REPLY_CHARS} chars]`;
 }
 
 export async function startDiscordListener(opts: DiscordListenerOptions): Promise<DiscordBridge> {
@@ -53,7 +61,7 @@ export async function startDiscordListener(opts: DiscordListenerOptions): Promis
   // unless you ask for X" pattern).
   const { runAgent } = await import("./run.js");
   const run = opts.runFn ?? runAgent;
-  const capture = opts.captureOutput;
+  const capture = opts.captureOutput ?? defaultCaptureOutput;
 
   const bridge = new DiscordBridge({
     listenChannelIds: opts.listenChannelIds,
@@ -70,15 +78,14 @@ export async function startDiscordListener(opts: DiscordListenerOptions): Promis
         name: opts.agentName,
         prompt: cleaned,
         model: opts.model,
+        // PR-19: capture the agent's stdout so we can post it as a reply.
+        // Without this, runAgent uses stdio:inherit and we have nothing
+        // to reply with.
+        captureStdout: true,
       });
       if (result.exitCode !== 0) {
         return `[bob] session exited with code ${result.exitCode}`;
       }
-      // v1 dispatch capture: callers wire this if they want auto-reply.
-      // Without a capture function, the session output went to the
-      // serving process stdout (stdio:inherit in runAgent) and isn't
-      // available to post back. Returning undefined suppresses the reply.
-      if (!capture) return undefined;
       return await capture(result);
     },
   });
