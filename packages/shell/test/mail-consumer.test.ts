@@ -21,8 +21,8 @@ describe("MailConsumer", () => {
   };
 
   beforeEach(() => {
-    tmpInbox = mkdtempSync(join(tmpdir(), "milton-inbox-"));
-    tmpLock = mkdtempSync(join(tmpdir(), "milton-lock-"));
+    tmpInbox = mkdtempSync(join(tmpdir(), "bob-inbox-"));
+    tmpLock = mkdtempSync(join(tmpdir(), "bob-lock-"));
     mkdirSync(join(tmpInbox, "new"), { recursive: true });
     mkdirSync(join(tmpInbox, "cur"), { recursive: true });
   });
@@ -59,7 +59,7 @@ describe("MailConsumer", () => {
 
   it("processes mail that arrived BEFORE start (fixes openclaw startup-race bug)", async () => {
     // openclaw-tps-mail pre-populated seenFiles on boot and stranded
-    // pre-existing mail. Milton must NOT do that.
+    // pre-existing mail. Bob must NOT do that.
     writeMail("existing", "pre-existing message");
     const seen: MailMessage[] = [];
 

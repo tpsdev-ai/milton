@@ -1,8 +1,8 @@
 {
-  "name": "@tpsdev-ai/milton-shell",
+  "name": "@tpsdev-ai/bob-shell",
   "version": "0.0.0",
   "type": "module",
-  "description": "Milton shell runtime — mail consumer, Flair pair, role loader, cron glue.",
+  "description": "Bob shell runtime — mail consumer, Flair pair, role loader, cron glue.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

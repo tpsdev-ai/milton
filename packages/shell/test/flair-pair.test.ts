@@ -8,7 +8,7 @@ describe("flairPair (keypair generation)", () => {
   let tmpKeys: string;
 
   beforeEach(() => {
-    tmpKeys = mkdtempSync(join(tmpdir(), "milton-keys-"));
+    tmpKeys = mkdtempSync(join(tmpdir(), "bob-keys-"));
   });
 
   afterEach(() => {

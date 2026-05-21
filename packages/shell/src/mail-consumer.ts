@@ -35,7 +35,7 @@ export interface MailConsumerOptions {
   launcherPath?: string;
   // Polling interval in ms. Default 2000.
   pollIntervalMs?: number;
-  // Lock file location. Defaults to ~/.milton/<name>.lock.
+  // Lock file location. Defaults to ~/.bob/<name>.lock.
   lockFile?: string;
   // Custom dispatch handler. Tests inject; defaults to spawning the launcher.
   dispatch?: (msg: MailMessage) => Promise<void>;
@@ -68,7 +68,7 @@ export class MailConsumer {
       inboxRoot,
       launcherPath,
       pollIntervalMs: opts.pollIntervalMs ?? 2000,
-      lockFile: opts.lockFile ?? join(homedir(), ".milton", `${opts.name}.lock`),
+      lockFile: opts.lockFile ?? join(homedir(), ".bob", `${opts.name}.lock`),
       dispatch: opts.dispatch,
     };
     this.stats = { processed: 0, failed: 0, startedAt: 0 };
@@ -77,7 +77,7 @@ export class MailConsumer {
   // Acquire the lock. We deliberately do NOT pre-populate seenFiles —
   // openclaw-tps-mail did and stranded mail written before its watcher
   // started (see reference_tps_mail_watcher_startup_race in flint's
-  // memory). Milton processes whatever's in new/ on the first poll;
+  // memory). Bob processes whatever's in new/ on the first poll;
   // seenFiles only guards against re-processing within the same run.
   start(): void {
     if (this.running) return;

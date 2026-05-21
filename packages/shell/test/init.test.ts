@@ -9,8 +9,8 @@ describe("initAgent", () => {
   let keysRoot: string;
 
   beforeEach(() => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "milton-init-"));
-    keysRoot = mkdtempSync(join(tmpdir(), "milton-keys-"));
+    tmpRoot = mkdtempSync(join(tmpdir(), "bob-init-"));
+    keysRoot = mkdtempSync(join(tmpdir(), "bob-keys-"));
   });
 
   afterEach(() => {
@@ -46,9 +46,9 @@ describe("initAgent", () => {
     expect(soul.length).toBeGreaterThan(500);
   });
 
-  it("writes milton.yaml with provider + model + tools", () => {
+  it("writes bob.yaml with provider + model + tools", () => {
     const res = initAgent({ ...baseOpts(), provider: "exe-dev-gateway", model: "claude-opus-4-7" });
-    const yaml = readFileSync(join(res.agentDir, "milton.yaml"), "utf8");
+    const yaml = readFileSync(join(res.agentDir, "bob.yaml"), "utf8");
     expect(yaml).toContain("id: testbot");
     expect(yaml).toContain("role: ea");
     expect(yaml).toContain("name: exe-dev-gateway");

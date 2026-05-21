@@ -1,6 +1,6 @@
-// Milton shell — public surface.
+// Bob shell — public surface.
 //
-// The shell is the wiring that every Milton-shaped agent shares:
+// The shell is the wiring that every Bob-shaped agent shares:
 // identity (Flair Ed25519 pair), mail consumer, Discord bridge, cron
 // glue, and role loader. The "form" — soul, tools, model choice — is
 // per-role config that gets fed into the shell at init time.
@@ -8,7 +8,7 @@
 // PR-1 ships the type surface + role loader + a stub mail consumer.
 // PR-2 will wire the Discord bridge + cron scheduler.
 
-export type MiltonRole = "ea" | "writer" | "reviewer" | "coder" | "qa" | "custom";
+export type BobRole = "ea" | "writer" | "reviewer" | "coder" | "qa" | "custom";
 
 export interface ProviderConfig {
   name: "ollama-cloud" | "ollama-newton" | "exe-dev-gateway" | "anthropic" | "openai" | "omlx";
@@ -39,11 +39,11 @@ export interface CronEntry {
   prompt: string;
 }
 
-export interface MiltonConfig {
+export interface BobConfig {
   agent: {
     id: string;
     name: string;
-    role: MiltonRole;
+    role: BobRole;
   };
   provider: ProviderConfig;
   identity: IdentityConfig;

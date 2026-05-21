@@ -4,16 +4,16 @@ import { join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "dist", "cli.js");
 
-describe("milton CLI", () => {
-  it("prints help on `milton help`", () => {
+describe("bob CLI", () => {
+  it("prints help on `bob help`", () => {
     const out = execSync(`node ${CLI} help`, { encoding: "utf8" });
-    expect(out).toContain("Milton — moldable office-agent shell");
+    expect(out).toContain("Bob — moldable office-agent shell");
     expect(out).toContain("Commands:");
   });
 
   it("init --dry-run shows the plan without writing", () => {
     const out = execSync(`node ${CLI} init testbot --role ea --dry-run`, { encoding: "utf8" });
-    expect(out).toContain("[milton init] PLAN (--dry-run)");
+    expect(out).toContain("[bob init] PLAN (--dry-run)");
     expect(out).toContain("agent.id        = testbot");
     expect(out).toContain("agent.role      = ea");
   });
