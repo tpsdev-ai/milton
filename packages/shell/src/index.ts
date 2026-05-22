@@ -65,6 +65,14 @@ export {
   startDiscordListener,
 } from "./discord-serve.js";
 export {
+  type CheckStatus,
+  type DoctorCheck,
+  type DoctorOptions,
+  type DoctorReport,
+  formatReport,
+  runDoctor,
+} from "./doctor.js";
+export {
   type FlairPairOptions,
   type FlairPairResult,
   flairPair,

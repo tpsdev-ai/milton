@@ -8,11 +8,13 @@
 
 import {
   type BobRole,
+  formatReport,
   initAgent,
   loadRole,
   MailConsumer,
   runAgent,
   runAlign,
+  runDoctor,
   runOnboard,
   startDiscordListener,
 } from "@tpsdev-ai/bob-shell";
@@ -259,10 +261,10 @@ async function startDiscordOrExit(args: {
   });
 }
 
-function doctor(name: string): void {
-  console.log(
-    `[bob doctor] PR-1 stub — would check identity, mail, channels, provider auth for ${name}`,
-  );
+function doctor(name: string): number {
+  const report = runDoctor({ name });
+  console.log(formatReport(report));
+  return report.summary.fail > 0 ? 1 : 0;
 }
 
 async function main(): Promise<number> {
@@ -317,8 +319,7 @@ async function main(): Promise<number> {
           console.error("bob doctor: missing <name>");
           return 2;
         }
-        doctor(args.positional[0]);
-        return 0;
+        return doctor(args.positional[0]);
       case "help":
       case "--help":
       case "-h":
