@@ -15,16 +15,13 @@ export interface RoleTemplate {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Roles ship in examples/roles/<role>/ relative to repo root. The shell
-// resolves them via a lookup table so a Bob install (npm) finds them
-// in node_modules/@tpsdev-ai/bob-shell/roles/, and a workspace install
-// finds them in ../../examples/roles/.
-const CANDIDATE_PATHS = [
-  // Built into the package (post-npm-publish)
-  join(__dirname, "..", "roles"),
-  // Workspace dev (cloned repo)
-  join(__dirname, "..", "..", "..", "examples", "roles"),
-];
+// Roles ship at packages/shell/roles/<role>/ in the workspace AND at
+// node_modules/@tpsdev-ai/bob-shell/roles/<role>/ after npm install
+// (the `files: ["dist", "roles"]` in shell's package.json includes
+// them in the published tarball). __dirname during runtime is the dist/
+// dir, so .. resolves to packages/shell/ in dev or to the package root
+// post-install. Single path covers both.
+const CANDIDATE_PATHS = [join(__dirname, "..", "roles")];
 
 // Role names must be lowercase alphanumerics + hyphens. Defense against
 // caller-controlled path traversal: a role like "../../../etc" would
