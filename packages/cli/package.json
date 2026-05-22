@@ -1,12 +1,16 @@
 {
   "name": "@tpsdev-ai/bob",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
-  "description": "Bob CLI — bootstrap and run Bob-shaped office agents.",
+  "description": "Bob — office-agent shell. Hire a Bob, give them a role, and they show up to work.",
   "main": "dist/cli.js",
   "bin": {
     "bob": "./bin/bob"
   },
+  "files": [
+    "dist",
+    "bin"
+  ],
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
@@ -16,9 +20,21 @@
     "@tpsdev-ai/bob-discord": "workspace:*",
     "@tpsdev-ai/bob-shell": "workspace:*"
   },
-  "license": "Apache-2.0",
-  "files": [
-    "dist",
-    "bin"
-  ]
+  "keywords": [
+    "agent",
+    "office-agent",
+    "ea",
+    "pi-coding-agent",
+    "discord-bot",
+    "flair",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tpsdev-ai/bob.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/tpsdev-ai/bob#readme",
+  "bugs": "https://github.com/tpsdev-ai/bob/issues",
+  "license": "Apache-2.0"
 }

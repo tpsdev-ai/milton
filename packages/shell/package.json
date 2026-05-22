@@ -1,8 +1,8 @@
 {
   "name": "@tpsdev-ai/bob-shell",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
-  "description": "Bob shell runtime — mail consumer, Flair pair, role loader, cron glue.",
+  "description": "Bob shell runtime — mail consumer, Flair pair, role loader, Discord bridge, cron glue.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -11,10 +11,29 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist",
+    "roles"
+  ],
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
     "test": "bun test"
   },
+  "keywords": [
+    "agent",
+    "office-agent",
+    "pi-coding-agent",
+    "ea",
+    "discord-bot",
+    "flair"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tpsdev-ai/bob.git",
+    "directory": "packages/shell"
+  },
+  "homepage": "https://github.com/tpsdev-ai/bob#readme",
+  "bugs": "https://github.com/tpsdev-ai/bob/issues",
   "license": "Apache-2.0"
 }

@@ -1,6 +1,6 @@
 {
   "name": "@tpsdev-ai/bob-discord",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Discord.js binding for bob-shell's DiscordClient interface.",
   "main": "dist/index.js",
@@ -11,6 +11,9 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
@@ -20,5 +23,18 @@
     "@tpsdev-ai/bob-shell": "workspace:*",
     "discord.js": "^14.16.0"
   },
+  "keywords": [
+    "discord",
+    "discord.js",
+    "bob",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tpsdev-ai/bob.git",
+    "directory": "packages/discord"
+  },
+  "homepage": "https://github.com/tpsdev-ai/bob#readme",
+  "bugs": "https://github.com/tpsdev-ai/bob/issues",
   "license": "Apache-2.0"
 }
