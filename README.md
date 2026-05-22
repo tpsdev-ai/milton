@@ -15,7 +15,7 @@ bob onboard pulse --role ea --provider exe-dev-gateway --model claude-opus-4-7
 
 1. **Scaffolds** `~/agents/pulse/` — soul.md (from the role template), bob.yaml config, ed25519 keypair, per-agent pi config (auth + gateway routing), and an executable launcher at `bin/pulse`.
 2. **Opens an interview** — pi-coding-agent runs in interactive mode with a meta-system-prompt that frames the session as a hiring conversation. You shape the persona by talking; the agent writes the refined `soul.md` itself when you signal you're done.
-3. **Leaves you with a working agent.** `pulse "what should I know this morning?"` starts a session. `bob run pulse --model claude-sonnet-4-6 "draft today's brief"` overrides the model for one call. `bob serve pulse --discord --discord-token-file ~/.tps/secrets/pulse-token --discord-channels 123,456` keeps her listening on Discord.
+3. **Leaves you with a working agent.** `pulse "what should I know this morning?"` starts a session. `bob run pulse --model claude-sonnet-4-6 "draft today's brief"` overrides the model for one call. `bob serve pulse --discord --discord-token-file ~/.tps/secrets/pulse-token --discord-channels 123,456` keeps Pulse listening on Discord and responding to mentions.
 
 ## What's wired
 
@@ -48,6 +48,15 @@ Bob is for small teams who want a handful of named, role-specific agents — a s
 
 Bob isn't a multi-agent framework ([CrewAI](https://github.com/crewAIInc/crewAI), [AutoGen](https://github.com/microsoft/autogen), [LangGraph](https://www.langchain.com/langgraph)), a memory layer ([Letta](https://github.com/letta-ai/letta), [Honcho](https://github.com/plastic-labs/honcho)), or a general agent platform ([Goose](https://github.com/aaif-goose/goose), [Mastra](https://mastra.ai), [Google ADK](https://github.com/google/adk-python)). It's the office plumbing around an existing terminal agent.
 
+Bob is one layer of an open stack:
+
+- **[pi-coding-agent](https://github.com/earendil-works/pi)** — the agent loop, tools, and LLM provider abstraction Bob sits on top of.
+- **Bob** (you are here) — the office shell: identity, mailbox, channels, scheduling, doctor.
+- **[Flair](https://github.com/tpsdev-ai/flair)** — the memory layer Bob's agents talk to by default; orchestrator-agnostic, self-host, federates across hosts.
+- **[TPS CLI](https://github.com/tpsdev-ai/cli)** — the coordination layer Bob's `bob serve` mail consumer plugs into; mail, branch-office bring-up, agent-to-agent dispatch.
+
+Each layer stands alone — use whichever fit your stack, swap out the others. Bob's value is concentrated at the office-shell layer; the rest is composable.
+
 If you already use pi and want each agent to have a name, a key, a mailbox, and a channel — Bob is what gets you there.
 
 ### Compatibility
@@ -60,17 +69,16 @@ If you already use pi and want each agent to have a name, a key, a mailbox, and 
 
 ```
 packages/
-  shell/    runtime + integrations (mail, Discord bridge, init, run, onboard/align)
-  cli/      the `bob` command
-  discord/  discord.js binding for shell's DiscordClient interface
-examples/
-  roles/
-    ea/     the seed soul + tool allowlist for the EA role
+  shell/        runtime + integrations + role templates
+    src/        mail consumer, Discord bridge, init, run, onboard/align, doctor
+    roles/      ea, writer, reviewer, coder, qa, custom
+  cli/          the `bob` command
+  discord/      discord.js binding for shell's DiscordClient interface
 ```
 
 ## Status
 
-`0.x`. The interactive onboard flow, real `bob run`, Discord listener with auto-reply, and per-agent pi config seeding all landed this week (PR-15 through PR-19). First production deployment is Pulse-EA on a fresh tps-pulse VM. Branch-office docs and `bob doctor` are next.
+`0.x`. The interactive onboard flow, real `bob run`, Discord listener with auto-reply, per-agent pi config seeding, role templates (ea/writer/reviewer/coder/qa/custom), and `bob doctor` all landed this week (PR-15 through PR-22). Branch-office docs and richer routing tables are next.
 
 ## License
 
