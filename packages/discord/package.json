@@ -1,6 +1,6 @@
 {
   "name": "@tpsdev-ai/bob-discord",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Discord.js binding for bob-shell's DiscordClient interface.",
   "main": "dist/index.js",

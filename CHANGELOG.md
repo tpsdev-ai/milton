@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-05-23
+
+Intel-gathering ergonomics for Bob agents. The launcher template now wires up GitHub-authenticated reads by default — no hand-patching when a Bob agent needs to poll releases.atom or hit the REST API.
+
+### Added
+
+- **GitHub PAT sourcing in the launcher template** (PR-26). `bob init` now emits an opt-in block that sources `$HOME/.tps/secrets/<name>-github-pat` into `GH_TOKEN` at startup. Lifts the GitHub rate-limit ceiling from ~60/hr (anonymous, shared exit IP) to 5000/hr (authenticated). Silent no-op when the file is missing — agent still runs on the anonymous limit. Per-agent PAT identity (not a shared bot) so a leak rotates one identity, not the org. The companion [@tpsdev-ai/skills/intel-gathering](https://github.com/tpsdev-ai/skills/tree/main/intel-gathering) skill pack documents the full pattern (PAT scope, verified-working vendor feeds, polling cadence, ETag caching).
+
+### Changed
+
+- **README polish** (PR-24). Three fixes from Nathan's review pass: provider-name corrections + clearer composition story.
+- **`bob onboard` interview prompt** (PR-25). "What would you say... ya do here?" Office Space callback shipped + "Bring On Board" backronym added to the README.
+
+### Notes
+
+No breaking changes. Existing Bob agents continue to work; the new launcher block only matters at next `bob init` (or when an agent has a PAT file under `~/.tps/secrets/<name>-github-pat`, which never auto-magically appears — you have to drop it).
+
+[0.2.0]: https://github.com/tpsdev-ai/bob/releases/tag/v0.2.0
+
 ## [0.1.0] - 2026-05-21
 
 First publishable release. Bob is functional end-to-end: scaffold an agent with `bob onboard`, shape its persona through conversation, run it via `bob run`, keep it listening on Discord via `bob serve --discord`, and health-check it with `bob doctor`.
