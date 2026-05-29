@@ -28,43 +28,87 @@ describe("DiscordJsClient", () => {
   });
 });
 
-describe("fetchRecent", () => {
-  // discord.js `messages.fetch` resolves a Collection (a Map subclass) keyed by
-  // snowflake. The bug iterated the Collection directly (`for…of`), yielding
-  // [key, Message] PAIRS, so `m.author.id` threw. This reproduces that shape
-  // with a plain Map and asserts we iterate `.values()`.
-  function fakeMessage(id: string, authorId: string, content: string) {
-    return {
-      id,
-      channelId: "chan-1",
-      author: { id: authorId, username: `u-${authorId}` },
-      content,
-      mentions: { users: new Map<string, unknown>([["999", {}]]) },
-    };
+describe("outbound via REST (no gateway / login)", () => {
+  interface RestCall {
+    method: string;
+    route: string;
+    options?: { body?: Record<string, unknown>; query?: URLSearchParams };
+  }
+  // Stub the underlying discord.js client's REST manager (the only thing
+  // outbound touches now — no channels.fetch, no login). GET returns raw API
+  // messages (snake_case + a mentions ARRAY, as the real REST endpoint does).
+  function stubRest(client: DiscordJsClient): RestCall[] {
+    const calls: RestCall[] = [];
+    const rec =
+      (method: string) =>
+      async (route: string, options?: RestCall["options"]): Promise<unknown> => {
+        calls.push({ method, route, options });
+        if (method !== "get") return undefined;
+        return [
+          {
+            id: "m1",
+            channel_id: "chan-1",
+            author: { id: "111", username: "alice" },
+            content: "hi",
+            mentions: [{ id: "999" }],
+          },
+          {
+            id: "m2",
+            channel_id: "chan-1",
+            author: { id: "222", username: "bobby" },
+            content: "yo",
+            mentions: [],
+          },
+        ];
+      };
+    // biome-ignore lint/suspicious/noExplicitAny: test stub for a private field
+    (client as any).client = { rest: { post: rec("post"), put: rec("put"), get: rec("get") } };
+    return calls;
   }
 
-  it("maps a Collection of messages, iterating values not [key,value] entries", async () => {
+  it("reply POSTs to the channel-messages route with content + reply reference", async () => {
     const client = new DiscordJsClient({ token: "fake", botUserId: "999" });
-    const collection = new Map<string, unknown>([
-      ["m1", fakeMessage("m1", "111", "hello")],
-      ["m2", fakeMessage("m2", "999", "self")],
-    ]);
-    // Stub the underlying discord.js client so requireTextChannel + fetch resolve.
-    // biome-ignore lint/suspicious/noExplicitAny: test stub for a private field
-    (client as any).client = {
-      channels: {
-        fetch: async () => ({
-          isTextBased: () => true,
-          send: () => undefined,
-          messages: { fetch: async () => collection },
-        }),
-      },
-    };
+    const calls = stubRest(client);
+    await client.reply("chan-1", "hello", { replyTo: "m9" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("post");
+    expect(calls[0]?.route).toContain("chan-1");
+    expect(calls[0]?.options?.body?.content).toBe("hello");
+    expect((calls[0]?.options?.body?.message_reference as { message_id: string })?.message_id).toBe(
+      "m9",
+    );
+  });
 
+  it("reply omits the reference when there's no replyTo", async () => {
+    const client = new DiscordJsClient({ token: "fake", botUserId: "999" });
+    const calls = stubRest(client);
+    await client.reply("chan-1", "plain");
+    expect(calls[0]?.options?.body?.message_reference).toBeUndefined();
+  });
+
+  it("react PUTs the own-reaction route with the URL-encoded emoji", async () => {
+    const client = new DiscordJsClient({ token: "fake", botUserId: "999" });
+    const calls = stubRest(client);
+    await client.react("chan-1", "m9", "✅");
+    expect(calls[0]?.method).toBe("put");
+    expect(calls[0]?.route).toContain("chan-1");
+    expect(calls[0]?.route).toContain(encodeURIComponent("✅"));
+  });
+
+  it("fetchRecent maps raw API messages (snake_case + mentions array → mentionsBot)", async () => {
+    const client = new DiscordJsClient({ token: "fake", botUserId: "999" });
+    stubRest(client);
     const out = await client.fetchRecent("chan-1", 10);
     expect(out.map((m) => m.id)).toEqual(["m1", "m2"]);
-    expect(out[0]?.authorId).toBe("111");
-    expect(out[1]?.mentionsBot).toBe(true); // mentions.users carries botUserId 999
+    expect(out[0]).toEqual({
+      id: "m1",
+      channelId: "chan-1",
+      authorId: "111",
+      authorName: "alice",
+      content: "hi",
+      mentionsBot: true, // botUserId 999 is in m1's mentions
+    });
+    expect(out[1]?.mentionsBot).toBe(false); // 999 not in m2's mentions
   });
 });
 

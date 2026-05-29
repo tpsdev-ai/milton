@@ -97,6 +97,11 @@ export async function startPersistent(opts: RunPersistentOptions): Promise<Persi
     model: opts.model,
   });
 
+  // Mark this as the persistent runtime so "serving" capabilities (discord's
+  // inbound gateway) open their connection — createPiRunSession surfaces it as
+  // BOB_PERSISTENT before loading extensions. A one-shot `bob run` leaves it
+  // falsy and stays outbound-only.
+  config.persistent = true;
   const factory = opts.sessionFactory ?? defaultPersistentFactory;
   const session = await factory(config);
 

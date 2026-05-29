@@ -89,6 +89,12 @@ export interface RunSessionConfig {
   // block. JSON values carry config only — NEVER a secret (schemas forbid an
   // inlined token; the discord capability holds only a token file PATH).
   capabilityEnv: Record<string, string>;
+  // True only for the PERSISTENT runtime (`bob serve`/runPersistent). Surfaced
+  // to capabilities via BOB_PERSISTENT so "serving" capabilities (e.g. discord's
+  // inbound gateway listener) only open their connection persistently — a
+  // one-shot `bob run` stays minimal (outbound tools, no gateway). Defaults
+  // falsy (ephemeral run).
+  persistent?: boolean;
 }
 
 // The injectable seam. Production builds a real pi AgentSession; tests inject a
@@ -332,6 +338,10 @@ export async function createPiRunSession(
   for (const [key, value] of Object.entries(config.capabilityEnv)) {
     process.env[key] = value;
   }
+  // Runtime-mode signal for "serving" capabilities (discord's inbound gateway):
+  // set BEFORE the extensions load. "1" only for the persistent runtime; a
+  // one-shot run clears it so capabilities stay outbound-only.
+  process.env.BOB_PERSISTENT = config.persistent ? "1" : "";
   const resourceLoader = new DefaultResourceLoader(loaderOpts);
   await resourceLoader.reload();
 

@@ -3,17 +3,20 @@
 // Importing this package pulls discord.js (~30MB of WS + REST). Agents
 // that don't need Discord shouldn't depend on this package — keep the
 // shell-only install slim.
+//
+// OUTBOUND vs INBOUND are decoupled (so a one-shot `bob run` stays minimal):
+//   * OUTBOUND (reply/react/fetch) goes through `client.rest` — discord.js's
+//     REST manager. It needs only the token (setToken in the constructor); it
+//     does NOT require login()/a gateway connection. It still sends the correct
+//     `User-Agent` and honors `Retry-After` on 429 (the @discordjs/rest
+//     RequestManager hygiene — the thing the failed raw `curl` lacked). This is
+//     NOT a raw fetch: it's the client's own REST path.
+//   * INBOUND (the message listener) needs the gateway, so it requires
+//     connect() (login). Only the PERSISTENT runtime calls connect(); a one-shot
+//     run gets the outbound REST tools with no gateway, no duplicate login.
 
 import type { DiscordClient, DiscordMessage } from "@tpsdev-ai/bob-shell";
-import { Client, Events, GatewayIntentBits, type Message, type TextBasedChannel } from "discord.js";
-
-// All REST/gateway traffic flows through discord.js, which sends a correct
-// `User-Agent` (`DiscordBot (https://discord.js.org, <ver>)`) and honors the
-// `Retry-After` header on 429 by default (see @discordjs/rest RequestManager:
-// it reads `Retry-After`, sleeps, and retries). The discord capability relies
-// on that — the failed `bin/post-discord` curl sent NO User-Agent and ignored
-// `retry-after`, which fed the Cloudflare-1015 class. Do NOT introduce a raw
-// fetch on this path; keep everything on the client so that hygiene holds.
+import { Client, Events, GatewayIntentBits, type Message, Routes } from "discord.js";
 
 export interface DiscordJsClientOptions {
   // Bot token. Read from a secret file in production; passed inline in
@@ -37,6 +40,17 @@ export function shouldProcessMessage(authorId: string, ownBotId: string | undefi
   return !ownBotId || authorId !== ownBotId;
 }
 
+// The slice of a raw Discord API message (REST GET /channels/:id/messages) that
+// fetchRecent reads. (Raw API uses snake_case + a mentions ARRAY — not the
+// discord.js Message object.)
+interface RawApiMessage {
+  id: string;
+  channel_id: string;
+  author: { id: string; username: string };
+  content: string;
+  mentions?: Array<{ id: string }>;
+}
+
 export class DiscordJsClient implements DiscordClient {
   private readonly client: Client;
   private readonly token: string;
@@ -54,6 +68,10 @@ export class DiscordJsClient implements DiscordClient {
         GatewayIntentBits.MessageContent,
       ],
     });
+    // Enable the REST manager WITHOUT logging in — outbound works in a one-shot
+    // run with no gateway connection. (login() also sets the token; doing it
+    // here makes REST usable before/without connect().)
+    this.client.rest.setToken(this.token);
 
     this.client.on(Events.ClientReady, (c) => {
       // Pin the bot user ID for mention detection once the gateway is live.
@@ -83,6 +101,8 @@ export class DiscordJsClient implements DiscordClient {
     this.messageHandler = handler;
   }
 
+  // Open the gateway (login). INBOUND-only — outbound already works via REST.
+  // The persistent runtime calls this; a one-shot run does not.
   async connect(): Promise<void> {
     await this.client.login(this.token);
   }
@@ -91,55 +111,42 @@ export class DiscordJsClient implements DiscordClient {
     await this.client.destroy();
   }
 
+  // --- OUTBOUND (REST, no gateway needed) -------------------------------
+
   async reply(channelId: string, text: string, opts?: { replyTo?: string }): Promise<void> {
-    const channel = await this.requireTextChannel(channelId);
-    await (channel as unknown as { send: (payload: unknown) => Promise<unknown> }).send({
-      content: text,
-      reply: opts?.replyTo ? { messageReference: opts.replyTo } : undefined,
+    await this.client.rest.post(Routes.channelMessages(channelId), {
+      body: {
+        content: text,
+        // Raw API reply shape. fail_if_not_exists:false → if the referenced
+        // message is gone, post a normal message instead of erroring.
+        message_reference: opts?.replyTo
+          ? { message_id: opts.replyTo, fail_if_not_exists: false }
+          : undefined,
+      },
     });
   }
 
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
-    const channel = await this.requireTextChannel(channelId);
-    // channel.messages.react goes through discord.js REST (correct UA +
-    // retry-after). emoji is a unicode glyph or a "name:id" custom-emoji ref.
-    await (
-      channel as unknown as {
-        messages: { react: (m: string, e: string) => Promise<unknown> };
-      }
-    ).messages.react(messageId, emoji);
+    // PUT /channels/:c/messages/:m/reactions/:emoji/@me — emoji must be URL-
+    // encoded (unicode glyph or a "name:id" custom-emoji ref).
+    await this.client.rest.put(
+      Routes.channelMessageOwnReaction(channelId, messageId, encodeURIComponent(emoji)),
+    );
   }
 
   async fetchRecent(channelId: string, limit: number): Promise<DiscordMessage[]> {
-    const channel = await this.requireTextChannel(channelId);
-    // discord.js `messages.fetch` returns a Collection (a Map subclass). A bare
-    // `for…of` over a Map yields [key, value] PAIRS, not Message objects — so
-    // reading `m.author.id` threw "Cannot read properties of undefined
-    // (reading 'id')". Iterate `.values()` to get the Messages themselves.
-    const collection = await (
-      channel as unknown as {
-        messages: { fetch: (o: { limit: number }) => Promise<{ values(): Iterable<Message> }> };
-      }
-    ).messages.fetch({ limit });
-    const out: DiscordMessage[] = [];
-    for (const m of collection.values()) {
-      out.push({
-        id: m.id,
-        channelId: m.channelId,
-        authorId: m.author.id,
-        authorName: m.author.username,
-        content: m.content,
-        mentionsBot: this.resolvedBotUserId ? m.mentions.users.has(this.resolvedBotUserId) : false,
-      });
-    }
-    return out;
-  }
-
-  private async requireTextChannel(channelId: string): Promise<TextBasedChannel> {
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased() || !("send" in channel)) {
-      throw new Error(`channel ${channelId} not text-based or not fetchable`);
-    }
-    return channel;
+    const raw = (await this.client.rest.get(Routes.channelMessages(channelId), {
+      query: new URLSearchParams({ limit: String(limit) }),
+    })) as RawApiMessage[];
+    return raw.map((m) => ({
+      id: m.id,
+      channelId: m.channel_id,
+      authorId: m.author.id,
+      authorName: m.author.username,
+      content: m.content,
+      mentionsBot: this.resolvedBotUserId
+        ? (m.mentions ?? []).some((u) => u.id === this.resolvedBotUserId)
+        : false,
+    }));
   }
 }
