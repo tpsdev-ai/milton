@@ -179,7 +179,13 @@ async function run(
     console.error('bob run: a prompt is required, e.g. `bob run <name> "summarize my inbox"`');
     return 2;
   }
-  const result = await runAgent({ name, prompt, model });
+  // captureStdout collects the assistant's final text into result.stdout.
+  // runAgent itself is silent (it accumulates deltas, never writes to console),
+  // so without this `bob run` printed nothing — print the response here.
+  const result = await runAgent({ name, prompt, model, captureStdout: true });
+  if (result.stdout && result.stdout.trim().length > 0) {
+    console.log(result.stdout);
+  }
   return result.exitCode;
 }
 
