@@ -60,12 +60,14 @@ class FakeDiscordClient implements DiscordClient {
   connectCalled = false;
   disconnectCalled = false;
   replyThrows = false;
+  connectHangs = false;
 
   on(_e: "message", handler: (msg: DiscordMessage) => void): void {
     this.handler = handler;
   }
   async connect(): Promise<void> {
     this.connectCalled = true;
+    if (this.connectHangs) await new Promise<void>(() => {}); // never resolves
   }
   async disconnect(): Promise<void> {
     this.disconnectCalled = true;
@@ -288,6 +290,44 @@ describe("wireDiscordCapability — 429 surfacing + lifecycle", () => {
     expect(client.connectCalled).toBe(true);
     await wired.stop();
     expect(client.disconnectCalled).toBe(true);
+  });
+
+  it("start() rejects when the gateway connect hangs (timeout)", async () => {
+    const pi = new FakePi();
+    const client = new FakeDiscordClient();
+    client.connectHangs = true;
+    const config: DiscordCapabilityConfig = {
+      tokenFile: "/s",
+      channelIds: ["c"],
+      dispatchAll: false,
+    };
+    const wired = wireDiscordCapability({
+      pi,
+      client,
+      config,
+      log: () => {},
+      connectTimeoutMs: 20,
+    });
+    await expect(wired.start()).rejects.toThrow(/timed out/);
+  });
+
+  it("start() resolves normally when connect is fast (timeout not hit)", async () => {
+    const pi = new FakePi();
+    const client = new FakeDiscordClient();
+    const config: DiscordCapabilityConfig = {
+      tokenFile: "/s",
+      channelIds: ["c"],
+      dispatchAll: false,
+    };
+    const wired = wireDiscordCapability({
+      pi,
+      client,
+      config,
+      log: () => {},
+      connectTimeoutMs: 5000,
+    });
+    await wired.start();
+    expect(client.connectCalled).toBe(true);
   });
 });
 

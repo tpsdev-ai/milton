@@ -68,6 +68,30 @@ const DISCORD_MAX_REPLY_CHARS = 1900;
 // Cap on discord_fetch to keep a single read bounded.
 const FETCH_MAX_LIMIT = 50;
 const FETCH_DEFAULT_LIMIT = 20;
+// Max time to wait for the gateway to connect before giving up. A hung connect
+// (e.g. a rate-limited/blocked egress IP — the Cloudflare-1015 class that
+// stalled Pulse on the old Portland VM) would otherwise never settle and freeze
+// the persistent session at startup. index.ts's try/catch only catches
+// rejections, not hangs — so we convert a hang into a rejection here.
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+
+// Race a promise against a timeout, rejecting with `message` on timeout. The
+// caller (index.ts) catches the rejection + continues, so a stuck gateway no
+// longer blocks startup — the outbound tools + session still come up.
+async function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  // If `p` settles (rejects) AFTER we've already timed out, nobody is awaiting
+  // it — swallow that late rejection so it isn't an unhandled rejection.
+  p.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // Result of wiring — returned so the factory (and tests) can drive/inspect it.
 export interface WiredCapability {
@@ -84,6 +108,9 @@ export interface WireOptions {
   // Logger seam — defaults to console. Tests inject a capture. NOTHING here
   // ever logs the token (it lives only inside the client).
   log?: (msg: string) => void;
+  // Max ms to wait for the gateway connect before giving up (default 15s).
+  // Tests inject a small value to exercise the hang path quickly.
+  connectTimeoutMs?: number;
 }
 
 function ok(text: string): { content: Array<{ type: "text"; text: string }>; details: unknown } {
@@ -275,9 +302,14 @@ export function wireDiscordCapability(opts: WireOptions): WiredCapability {
     pi.sendUserMessage(cleaned);
   });
 
+  const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   return {
     async start() {
-      await client.connect();
+      await withTimeout(
+        client.connect(),
+        connectTimeoutMs,
+        `discord gateway connect timed out after ${connectTimeoutMs}ms`,
+      );
     },
     async stop() {
       await client.disconnect();
