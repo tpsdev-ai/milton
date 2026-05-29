@@ -70,7 +70,10 @@ export function wireFlairCapability(opts: WireOptions): void {
     }),
     async execute(_id, params) {
       const query = params.query as string;
-      const limit = Math.min((params.limit as number | undefined) ?? DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
+      const limit = Math.min(
+        (params.limit as number | undefined) ?? DEFAULT_SEARCH_LIMIT,
+        MAX_SEARCH_LIMIT,
+      );
       const hits = await client.search(query, limit);
       if (hits.length === 0) return ok("(no memories found)");
       const rendered = hits

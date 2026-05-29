@@ -1,5 +1,5 @@
-import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "bun:test";
+import { webcrypto } from "node:crypto";
 import {
   CONFIG_ENV_VAR,
   type FlairClient,
@@ -120,7 +120,12 @@ describe("wireFlairCapability", () => {
   it("flair_search passes query+limit and renders hits", async () => {
     const { pi, client } = wired();
     client.hits = [
-      { id: "pulse-1", content: "moved to dtrt-pulse", createdAt: "2026-05-29T00:00:00Z", score: 0.91 },
+      {
+        id: "pulse-1",
+        content: "moved to dtrt-pulse",
+        createdAt: "2026-05-29T00:00:00Z",
+        score: 0.91,
+      },
     ];
     const out = await pi.call("flair_search", { query: "dtrt-pulse", limit: 3 });
     expect(client.searchCalls).toEqual([{ query: "dtrt-pulse", limit: 3 }]);
@@ -170,8 +175,12 @@ describe("FlairHttpClient protocol + Ed25519 signing", () => {
     ])) as CryptoKeyPair;
     const pkcs8b64 = Buffer.from(await subtle.exportKey("pkcs8", kp.privateKey)).toString("base64");
 
-    const captured: { url: string; method: string; headers: Record<string, string>; body?: string }[] =
-      [];
+    const captured: {
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+    }[] = [];
     const fetchImpl = async (
       url: string,
       init: { method: string; headers: Record<string, string>; body?: string },
@@ -180,7 +189,8 @@ describe("FlairHttpClient protocol + Ed25519 signing", () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ results: [{ id: "pulse-9", content: "c", _score: 0.5 }] }),
+        text: async () =>
+          JSON.stringify({ results: [{ id: "pulse-9", content: "c", _score: 0.5 }] }),
       };
     };
 

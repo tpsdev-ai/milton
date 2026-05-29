@@ -40,7 +40,10 @@ export type Durability = "ephemeral" | "standard" | "persistent" | "permanent";
 
 export interface FlairClient {
   search(query: string, limit?: number): Promise<FlairSearchHit[]>;
-  write(content: string, opts?: { durability?: Durability; supersedes?: string }): Promise<{ id: string }>;
+  write(
+    content: string,
+    opts?: { durability?: Durability; supersedes?: string },
+  ): Promise<{ id: string }>;
   get(id: string): Promise<FlairMemory | null>;
 }
 
