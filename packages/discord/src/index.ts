@@ -25,6 +25,18 @@ export interface DiscordJsClientOptions {
   botUserId?: string;
 }
 
+// Whether the gateway listener should process an inbound message. We skip ONLY
+// the agent's OWN messages (self-loop guard), keyed on the resolved bot user id.
+// We deliberately do NOT skip all bots: an EA like Pulse must hear hand-offs
+// from the other TPS agents (Flint/Anvil), and the reply routes back as a
+// quote-reply — never an @mention — so there is no bot↔bot mention loop. Until
+// the gateway READY event resolves our own id, ownBotId is undefined and we let
+// the message through (messages only arrive post-READY in practice, so the id
+// is set by then; this just keeps the predicate total).
+export function shouldProcessMessage(authorId: string, ownBotId: string | undefined): boolean {
+  return !ownBotId || authorId !== ownBotId;
+}
+
 export class DiscordJsClient implements DiscordClient {
   private readonly client: Client;
   private readonly token: string;
@@ -50,8 +62,9 @@ export class DiscordJsClient implements DiscordClient {
 
     this.client.on(Events.MessageCreate, (m: Message) => {
       if (!this.messageHandler) return;
-      // Skip bot's own messages
-      if (m.author.bot) return;
+      // Skip ONLY our own messages (self-loop guard) — NOT all bots. See
+      // shouldProcessMessage: other agents must be able to reach the EA.
+      if (!shouldProcessMessage(m.author.id, this.resolvedBotUserId)) return;
       const mentionsBot = this.resolvedBotUserId
         ? m.mentions.users.has(this.resolvedBotUserId)
         : false;

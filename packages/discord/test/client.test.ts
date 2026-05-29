@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { DiscordJsClient } from "../src/index.js";
+import { DiscordJsClient, shouldProcessMessage } from "../src/index.js";
 
 // PR-6 keeps tests light — discord.js requires a real WS connection
 // to exercise the message-create path, so we limit unit coverage to
@@ -25,5 +25,25 @@ describe("DiscordJsClient", () => {
     expect(() => {
       client.on("message", () => {});
     }).not.toThrow();
+  });
+});
+
+describe("shouldProcessMessage", () => {
+  const own = "1472671820091232491"; // the agent's own bot id
+
+  it("skips the agent's own messages (self-loop guard)", () => {
+    expect(shouldProcessMessage(own, own)).toBe(false);
+  });
+
+  it("processes messages from a human", () => {
+    expect(shouldProcessMessage("284437008405757953", own)).toBe(true);
+  });
+
+  it("processes messages from OTHER bots/agents (EA must hear hand-offs)", () => {
+    expect(shouldProcessMessage("1472818438786383993", own)).toBe(true);
+  });
+
+  it("processes everything until our own id resolves (post-READY in practice)", () => {
+    expect(shouldProcessMessage(own, undefined)).toBe(true);
   });
 });
