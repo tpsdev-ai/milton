@@ -134,6 +134,62 @@ export function readBlock(yamlText: string, key: string): Record<string, unknown
   return found ? out : undefined;
 }
 
+// Read the top-level `cron:` block-sequence of maps into raw entries. Targets
+// the exact shape `bob init` documents:
+//
+//   cron:
+//     - name: morning_briefing
+//       schedule: "0 9 * * *"
+//       prompt: "Compose the brief."
+//
+// Each `- key: value` starts an entry; subsequent `key: value` lines indented
+// deeper than the `-` add to it. A column-0 key (or EOF) ends the block. Values
+// are coerced as scalars (quotes stripped). Returns [] when absent. The caller
+// validates required keys (name/schedule/prompt) + maps to CronEntry — keeping
+// this reader dependency-free + free of a layering cycle with index.ts.
+export function readCron(yamlText: string): Array<Record<string, string>> {
+  const lines = yamlText.split(/\r?\n/);
+  const entries: Array<Record<string, string>> = [];
+  let inBlock = false;
+  let current: Record<string, string> | undefined;
+  let dashIndent = -1;
+
+  for (const rawLine of lines) {
+    if (/^[A-Za-z0-9_-]+\s*:/.test(rawLine)) {
+      inBlock = rawLine.match(/^([A-Za-z0-9_-]+)\s*:/)?.[1] === "cron";
+      current = undefined;
+      continue;
+    }
+    if (!inBlock) continue;
+    const t = rawLine.trim();
+    if (t === "" || t.startsWith("#")) continue;
+    const indent = rawLine.length - rawLine.replace(/^ +/, "").length;
+
+    if (t.startsWith("-")) {
+      // New entry. The text after "-" may be the first `key: value`.
+      current = {};
+      entries.push(current);
+      dashIndent = indent;
+      const after = t.slice(1).trim();
+      if (after) addCronKv(current, after);
+    } else if (current && indent > dashIndent) {
+      addCronKv(current, t);
+    } else {
+      // Unexpected shape under cron: — stop reading the block.
+      break;
+    }
+  }
+  return entries;
+}
+
+function addCronKv(obj: Record<string, string>, kv: string): void {
+  // Same `name: value` shape as readBlock — coerceScalar trims + strips quotes;
+  // cron values are all strings (name / cron-expr / prompt), so stringify.
+  const m = kv.match(/^([A-Za-z0-9_-]+)\s*:(.*)$/);
+  if (!m) return;
+  obj[m[1]] = String(coerceScalar(m[2].trim()));
+}
+
 function splitList(inner: string): string[] {
   if (inner.trim() === "") return [];
   return inner
