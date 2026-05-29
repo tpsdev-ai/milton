@@ -34,7 +34,9 @@ import {
   ModelRegistry,
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
+import { readCron } from "./bob-yaml.js";
 import { capabilityConfigEnv, resolveCapabilities } from "./capability-loader.js";
+import type { CronEntry } from "./index.js";
 
 // Same regex as init.ts AGENT_NAME — names are filesystem paths, keep them
 // strict-safe (no `..`, no `/`, no newlines).
@@ -214,6 +216,26 @@ export interface ResolvedRunConfig {
   provider: string;
   model: string;
   config: RunSessionConfig;
+  // bob.yaml `cron:` entries (validated). Only the PERSISTENT runtime uses
+  // these (it schedules them into the live session); `bob run` ignores them.
+  cron: CronEntry[];
+}
+
+// Parse + validate bob.yaml `cron:` into CronEntry[]. Drops any entry missing
+// name/schedule/prompt — a single malformed entry shouldn't stop the agent from
+// starting (the scheduler additionally skips an unparseable schedule).
+function parseCron(yamlText: string): CronEntry[] {
+  return readCron(yamlText)
+    .filter(
+      (e) =>
+        typeof e.name === "string" &&
+        e.name.length > 0 &&
+        typeof e.schedule === "string" &&
+        e.schedule.length > 0 &&
+        typeof e.prompt === "string" &&
+        e.prompt.length > 0,
+    )
+    .map((e) => ({ name: e.name, schedule: e.schedule, prompt: e.prompt }));
 }
 
 export function resolveRunConfig(opts: ResolveRunConfigOptions): ResolvedRunConfig {
@@ -249,7 +271,7 @@ export function resolveRunConfig(opts: ResolveRunConfigOptions): ResolvedRunConf
     extensionSources: resolution.extensionSources,
     capabilityEnv: capabilityConfigEnv(resolution),
   };
-  return { agentDir, provider, model, config };
+  return { agentDir, provider, model, config, cron: parseCron(yamlText) };
 }
 
 // Real SDK factory: stand up a fresh, in-memory pi AgentSession for the agent,

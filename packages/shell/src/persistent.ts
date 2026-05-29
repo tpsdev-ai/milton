@@ -28,6 +28,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { type CronSchedulerHandle, startCronScheduler } from "./cron.js";
 import {
   createPiRunSession,
   type RunSession,
@@ -90,7 +91,7 @@ function neverResolves(): Promise<void> {
 export async function startPersistent(opts: RunPersistentOptions): Promise<PersistentHandle> {
   const log = opts.log ?? ((m: string) => console.error(m));
   const root = opts.agentsRoot ?? join(homedir(), "agents");
-  const { provider, model, config } = resolveRunConfig({
+  const { provider, model, config, cron } = resolveRunConfig({
     name: opts.name,
     agentsRoot: root,
     model: opts.model,
@@ -101,12 +102,36 @@ export async function startPersistent(opts: RunPersistentOptions): Promise<Persi
 
   log(`[bob] persistent session up for ${opts.name} (${provider}/${model})`);
 
+  // Scheduled work: fire each bob.yaml `cron:` prompt INTO this live session on
+  // its cadence (one gateway, no second `bob run` process). Await the idle
+  // barrier first so a tick doesn't cut into an in-flight inbound turn; fires
+  // are serialized by the scheduler. No-op when the agent declares no cron.
+  let cronScheduler: CronSchedulerHandle | undefined;
+  if (cron.length > 0) {
+    log(`[bob] scheduling ${cron.length} cron job(s) for ${opts.name}`);
+    cronScheduler = startCronScheduler({
+      entries: cron,
+      fire: async (entry) => {
+        try {
+          await session.waitForIdle?.();
+        } catch {
+          // proceed — pi serializes turns regardless
+        }
+        await session.prompt(entry.prompt);
+      },
+      log,
+    });
+  }
+
   let disposed = false;
   let disposing: Promise<void> | undefined;
   const shutdown = async (): Promise<void> => {
     if (disposed) return;
     if (disposing) return disposing;
     disposing = (async () => {
+      // Stop scheduling first so a pending cron tick can't fire into a session
+      // we're about to dispose.
+      cronScheduler?.stop();
       // Await any in-flight turn so we don't cut off a reply mid-stream. The
       // RunSession seam exposes `prompt` but not an idle barrier; production's
       // pi AgentSession has `agent.waitForIdle()`. We call it best-effort
