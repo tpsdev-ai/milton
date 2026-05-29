@@ -28,6 +28,46 @@ describe("DiscordJsClient", () => {
   });
 });
 
+describe("fetchRecent", () => {
+  // discord.js `messages.fetch` resolves a Collection (a Map subclass) keyed by
+  // snowflake. The bug iterated the Collection directly (`for…of`), yielding
+  // [key, Message] PAIRS, so `m.author.id` threw. This reproduces that shape
+  // with a plain Map and asserts we iterate `.values()`.
+  function fakeMessage(id: string, authorId: string, content: string) {
+    return {
+      id,
+      channelId: "chan-1",
+      author: { id: authorId, username: `u-${authorId}` },
+      content,
+      mentions: { users: new Map<string, unknown>([["999", {}]]) },
+    };
+  }
+
+  it("maps a Collection of messages, iterating values not [key,value] entries", async () => {
+    const client = new DiscordJsClient({ token: "fake", botUserId: "999" });
+    const collection = new Map<string, unknown>([
+      ["m1", fakeMessage("m1", "111", "hello")],
+      ["m2", fakeMessage("m2", "999", "self")],
+    ]);
+    // Stub the underlying discord.js client so requireTextChannel + fetch resolve.
+    // biome-ignore lint/suspicious/noExplicitAny: test stub for a private field
+    (client as any).client = {
+      channels: {
+        fetch: async () => ({
+          isTextBased: () => true,
+          send: () => undefined,
+          messages: { fetch: async () => collection },
+        }),
+      },
+    };
+
+    const out = await client.fetchRecent("chan-1", 10);
+    expect(out.map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(out[0]?.authorId).toBe("111");
+    expect(out[1]?.mentionsBot).toBe(true); // mentions.users carries botUserId 999
+  });
+});
+
 describe("shouldProcessMessage", () => {
   const own = "1472671820091232491"; // the agent's own bot id
 

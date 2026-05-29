@@ -112,13 +112,17 @@ export class DiscordJsClient implements DiscordClient {
 
   async fetchRecent(channelId: string, limit: number): Promise<DiscordMessage[]> {
     const channel = await this.requireTextChannel(channelId);
+    // discord.js `messages.fetch` returns a Collection (a Map subclass). A bare
+    // `for…of` over a Map yields [key, value] PAIRS, not Message objects — so
+    // reading `m.author.id` threw "Cannot read properties of undefined
+    // (reading 'id')". Iterate `.values()` to get the Messages themselves.
     const collection = await (
       channel as unknown as {
-        messages: { fetch: (o: { limit: number }) => Promise<Iterable<Message>> };
+        messages: { fetch: (o: { limit: number }) => Promise<{ values(): Iterable<Message> }> };
       }
     ).messages.fetch({ limit });
     const out: DiscordMessage[] = [];
-    for (const m of collection as Iterable<Message>) {
+    for (const m of collection.values()) {
       out.push({
         id: m.id,
         channelId: m.channelId,
