@@ -37,15 +37,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     config,
   });
 
-  // Open the gateway. A connect failure is logged but NOT fatal: the agent
-  // session (and the outbound tools) should still come up. The persistent
-  // runtime (PR4) owns reconnection/KeepAlive. The error never includes the
-  // token (it lives only inside the client; login errors name only the cause).
-  try {
-    await wired.start();
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : "gateway connect failed";
-    console.error(`discord capability: gateway connect failed (continuing): ${reason}`);
+  // Open the gateway (inbound listener) ONLY in the persistent runtime. A
+  // one-shot `bob run` keeps run minimal: it gets the outbound REST tools (which
+  // need no login) but opens no gateway — so it never duplicates the persistent
+  // session's bot login (the second-connection conflict) or pays the connect
+  // cost for a task that never receives a message. Bob sets BOB_PERSISTENT=1 in
+  // the persistent runtime (createPiRunSession); it's unset for `bob run`.
+  if (process.env.BOB_PERSISTENT === "1") {
+    // A connect failure is logged but NOT fatal: the session + outbound tools
+    // still come up. The error never includes the token (it lives only inside
+    // the client; login errors name only the cause).
+    try {
+      await wired.start();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "gateway connect failed";
+      console.error(`discord capability: gateway connect failed (continuing): ${reason}`);
+    }
+  } else {
+    console.error("discord capability: run mode — outbound REST tools only, gateway not opened");
   }
 }
 

@@ -12,8 +12,10 @@ import { CONFIG_ENV_VAR } from "../src/config.js";
 
 // The load-bearing proof (mirrors the cap-fixture e2e): a REAL pi AgentSession
 // built with the discord extension source surfaces discord_reply/react/fetch in
-// session.getAllTools(). No live gateway, no real token — the extension's
-// connect failure on an invalid token is non-fatal, so tools still register.
+// session.getAllTools(). No live gateway, no real token. This runs in RUN mode
+// (BOB_PERSISTENT unset), so the extension opens NO gateway at all — the
+// outbound REST tools register regardless. (Persistent mode would additionally
+// attempt the gateway connect, which is non-fatal on a bad token.)
 
 const extensionPath = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src", "index.ts");
 
@@ -27,10 +29,13 @@ describe("discord capability — end to end with a real pi session", () => {
     writeFileSync(tokenFile, "invalid.token.value\n", "utf8");
 
     const prevEnv = process.env[CONFIG_ENV_VAR];
+    const prevPersist = process.env.BOB_PERSISTENT;
     process.env[CONFIG_ENV_VAR] = JSON.stringify({
       tokenFile,
       channelIds: ["123456789012345678"],
     });
+    // RUN mode — no gateway. Outbound REST tools must still register.
+    process.env.BOB_PERSISTENT = "";
 
     try {
       const loader = new DefaultResourceLoader({
@@ -58,6 +63,8 @@ describe("discord capability — end to end with a real pi session", () => {
     } finally {
       if (prevEnv === undefined) delete process.env[CONFIG_ENV_VAR];
       else process.env[CONFIG_ENV_VAR] = prevEnv;
+      if (prevPersist === undefined) delete process.env.BOB_PERSISTENT;
+      else process.env.BOB_PERSISTENT = prevPersist;
       rmSync(cwd, { recursive: true, force: true });
       rmSync(agentDir, { recursive: true, force: true });
     }
