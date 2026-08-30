@@ -8,20 +8,26 @@ MODEL_DIR="$VENDOR/models"
 LLAMA_DIR="$VENDOR/llama.cpp"
 GGUF_NAME="nomic-embed-text-v1.5.Q4_K_M.gguf"
 GGUF_SHA256="d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac"
-# Pinned llama.cpp commit (recorded again in harness/goldens/pin.json after generate).
-# b6399 — embedding tool + mean pooling + --embd-normalize. Recorded again in pin.json.
-LLAMA_COMMIT="${MILTON_LLAMA_COMMIT:-b6399}"
+# pin.json is the only acceptable llama.cpp HEAD. A leftover vendor tree
+# must be checked out to that commit (or this script fails closed).
+PIN_FILE="$ROOT/harness/goldens/pin.json"
+if [[ ! -f "$PIN_FILE" ]]; then
+  echo "fail-closed: missing $PIN_FILE — cannot pin llama.cpp" >&2
+  exit 1
+fi
+PINNED_COMMIT="$(node "$ROOT/harness/scripts/ensure-llama-pin.mjs" --print)"
 GGUF_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/${GGUF_NAME}"
 
 mkdir -p "$MODEL_DIR"
 
 if [[ ! -d "$LLAMA_DIR/.git" ]]; then
-  echo "cloning llama.cpp @ ${LLAMA_COMMIT}..."
-  git clone --depth 1 --branch "$LLAMA_COMMIT" https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR" \
-    || git clone --depth 1 --branch "$LLAMA_COMMIT" https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
-else
-  echo "llama.cpp already cloned at $LLAMA_DIR"
+  echo "cloning llama.cpp (will checkout pin ${PINNED_COMMIT})..."
+  git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR" \
+    || git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
 fi
+
+echo "checking out pin.json llamacpp_commit ${PINNED_COMMIT}..."
+node "$ROOT/harness/scripts/ensure-llama-pin.mjs" --checkout --dir "$LLAMA_DIR"
 
 echo "building llama-embedding (CPU, gcc/g++)..."
 # Force gcc: some images have /usr/bin/c++ → clang, which then fails to find -lstdc++.

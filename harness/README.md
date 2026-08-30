@@ -25,7 +25,7 @@ Pinned path, not a vibe:
 The GGUF and the llama.cpp tree live in `harness/vendor/` (gitignored). They are **not** shipped in `@tpsdev-ai/milton`.
 
 ```sh
-npm run harness:setup          # clone pinned llama.cpp, build llama-embedding, fetch+verify GGUF
+npm run harness:setup          # checkout pin.json's llama.cpp commit (fail-closed on leftover drift), build llama-embedding, fetch+verify GGUF
 npm run harness:goldens        # write goldens/vectors.json + pin.json + CLS control
 npm run harness:epsilon        # run reference twice; derive EPSILON / EPSILON_ABS
 ```

@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { corpusDigest, loadCorpus } from "../lib/corpus.js";
-import { sha256file, sha256json } from "../lib/digest.js";
+import { sha256file } from "../lib/digest.js";
+import { loadPin, referenceDigest } from "../lib/goldens.js";
+import { assertLlamaAtPin } from "../lib/llama-pin.js";
 import { applyPrefix } from "../lib/prefix.js";
 import { createReferenceEmbedder, readLlamaCppPin, resolvePaths, runLlamaEmbedding, PINNED_GGUF_SHA256 } from "../lib/reference.js";
 
@@ -18,6 +20,7 @@ const OUT_DIR = join(HERE, "..", "goldens");
 
 const corpus = loadCorpus();
 const paths = resolvePaths();
+assertLlamaAtPin(paths.llamaDir, loadPin());
 const embed = createReferenceEmbedder(paths);
 
 const ggufSha = await sha256file(paths.gguf);
@@ -113,7 +116,7 @@ process.stdout.write(
     {
       n: items.length,
       corpus_digest: goldens.corpus_digest,
-      reference_digest: sha256json(items.map((it) => ({ id: it.id, vector: it.vector }))),
+      reference_digest: referenceDigest(goldens),
       gguf_sha256: ggufSha,
       llamacpp_commit: llamaCommit,
       llamacpp_digest: llamaDigest,
