@@ -1,0 +1,27 @@
+{
+  "name": "@tpsdev-ai/milton",
+  "version": "0.0.0",
+  "description": "In-process Node.js embeddings for Flair. Evidence-gated against a pinned llama.cpp reference.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test harness/test/*.test.js",
+    "harness:setup": "bash harness/scripts/setup-reference.sh",
+    "harness:goldens": "node harness/scripts/generate-goldens.mjs",
+    "harness:epsilon": "node harness/scripts/derive-epsilon.mjs",
+    "harness:gate": "node harness/scripts/run-gate.mjs",
+    "harness:must-fail": "node --test harness/test/must-fail.test.js",
+    "harness:bench": "node harness/scripts/bench-flair.mjs",
+    "harness:footprint": "node harness/scripts/bench-footprint.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {}
+}

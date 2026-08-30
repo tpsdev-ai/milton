@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+/**
+ * Install footprint: shipped package size and "zero native binary in src/".
+ */
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..", "..");
+const SRC = join(ROOT, "src");
+
+const NATIVE_RE = /\.(node|so|dylib|dll|a)$/i;
+const NATIVE_NAMES = /^(llama|onnxruntime|ggml)/i;
+
+function walk(dir, acc = []) {
+  if (!existsSync(dir)) return acc;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    const st = statSync(p);
+    if (st.isDirectory()) walk(p, acc);
+    else acc.push({ path: p, size: st.size, name });
+  }
+  return acc;
+}
+
+const srcFiles = walk(SRC);
+const nativeInSrc = srcFiles.filter(
+  (f) => NATIVE_RE.test(f.name) || NATIVE_NAMES.test(f.name),
+);
+
+let packedBytes = null;
+let packedMb = null;
+try {
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  const parsed = JSON.parse(out);
+  const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+  packedBytes = entry.size ?? entry.unpackedSize ?? null;
+  packedMb = packedBytes != null ? packedBytes / (1024 * 1024) : null;
+} catch (err) {
+  process.stderr.write(`npm pack --dry-run failed: ${err.message}\n`);
+}
+
+const srcBytes = srcFiles.reduce((s, f) => s + f.size, 0);
+
+const report = {
+  schema: "milton.footprint/1",
+  host: {
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+  },
+  src: {
+    files: srcFiles.map((f) => ({ path: relative(ROOT, f.path), bytes: f.size })),
+    bytes: srcBytes,
+    mb: srcBytes / (1024 * 1024),
+    native_binaries: nativeInSrc.map((f) => relative(ROOT, f.path)),
+    native_binary_count: nativeInSrc.length,
+  },
+  npm_pack_dry_run: {
+    bytes: packedBytes,
+    mb: packedMb,
+  },
+  assert: {
+    zero_native_in_src: nativeInSrc.length === 0,
+  },
+};
+
+mkdirSync(join(HERE, "..", "receipts"), { recursive: true });
+writeFileSync(join(HERE, "..", "receipts", "footprint.json"), `${JSON.stringify(report, null, 2)}\n`);
+process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+
+if (nativeInSrc.length !== 0) {
+  process.stderr.write("FAIL: native binary found under src/\n");
+  process.exitCode = 1;
+}
