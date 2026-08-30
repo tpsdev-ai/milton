@@ -1,0 +1,5 @@
+{
+  "snapshot": "default",
+  "install": "npm install 2>/dev/null || true",
+  "terminals": []
+}
