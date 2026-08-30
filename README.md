@@ -1,6 +1,6 @@
 # Milton
 
-> *"I could set the building on fire."*
+> *"Excuse me, I believe you have my stapler."*
 
 **The in-process Node.js embeddings module for [Flair](https://github.com/tpsdev-ai/flair).** One precise thing — text → vector — done flawlessly, in-process, with no separate binary and no native runtime to install. Every embedding is verified against a pinned reference before it ships. The cover sheet that has to be *right*, or the whole report bounces.
 
