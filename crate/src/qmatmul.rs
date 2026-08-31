@@ -20,6 +20,12 @@
 //! (1.5e-7). AVX2 4x8 kernels in `q4k_avx2` stay bit-exact vs the DSO
 //! and are not used on the embed path.
 //!
+//! Q4_K GEMV float accum matches pin AVX2 `_mm256_fmadd_ps(iacc, d*yd, acc)`
+//! (`mul_add`). Separate mul+add was 4.77e-7 on empty-none `kqv_out` MUL_MAT
+//! (701 elems). FMA is BIT_EXACT on that dump. Document n=7 leftover vs dump
+//! is 3.81e-6 — same as the pinned DSO GEMV (not closable on GEMV; 4x8 GEMM
+//! is worse and stays off the embed path).
+//!
 //! After GEMV-only, the first tensor that is **not bit-exact** vs the
 //! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT). There is no
 //! Q5_K REPACK/GEMV/GEMM in the pinned DSO (`tinyBLAS` rejects Q5_K;
@@ -846,9 +852,12 @@ fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut [f3
                 }
             }
             for j in 0..8 {
+                // Pin llama-embedding AVX2 `ggml_gemv_q4_K_8x8_q8_K` uses
+                // `_mm256_fmadd_ps(iacc_f32, d * yd, acc)` / same for dmin.
+                // Separate mul+add is a few ulps off dump kqv_out MUL_MAT.
                 let ds = d[j] * yb.d;
-                sumf[j] += iacc[j] as f32 * ds;
-                sum_minf[j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
+                sumf[j] = (iacc[j] as f32).mul_add(ds, sumf[j]);
+                sum_minf[j] = (iacc_min[j] as f32).mul_add(dmin[j] * yb.d, sum_minf[j]);
             }
         }
         for j in 0..8 {
@@ -1187,5 +1196,149 @@ mod tests {
             cos8 > 0.999,
             "Q4_K 8x8 drifted from generic vec_dot (repack bug?): cos={cos8} max_abs={max8}"
         );
+    }
+
+    fn load_dump_f32(path: &std::path::Path) -> Option<Vec<f32>> {
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.len() < 40 {
+            return None;
+        }
+        let n = i64::from_le_bytes(bytes[0..8].try_into().ok()?) as usize;
+        if bytes.len() < 40 + n * 4 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let o = 40 + i * 4;
+            out.push(f32::from_le_bytes(bytes[o..o + 4].try_into().ok()?));
+        }
+        Some(out)
+    }
+
+    /// Isolate Q4_K GEMV: dump kqv_out CONT → Milton → dump kqv_out MUL_MAT.
+    /// Does not go through the serial Q@K path.
+    #[test]
+    fn q4k_gemv_kqv_out_vs_pin_dump() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let gguf_path = root.join("harness/vendor/models/nomic-embed-text-v1.5.Q4_K_M.gguf");
+        if !gguf_path.exists() {
+            return;
+        }
+        let cases = [
+            (
+                "/tmp/ll-emb-empty/ll-kqv_out-0__CONT__25.f32",
+                "/tmp/ll-emb-empty/ll-kqv_out-0__MUL_MAT__26.f32",
+                "empty-none",
+            ),
+            (
+                "/tmp/ll-emb-doc/ll-kqv_out-0__CONT__25.f32",
+                "/tmp/ll-emb-doc/ll-kqv_out-0__MUL_MAT__26.f32",
+                "short-hello-document",
+            ),
+        ];
+        let gguf = crate::gguf::GgufFile::open(&gguf_path).unwrap();
+        let info = gguf.tensor("blk.0.attn_output.weight").unwrap();
+        let n_in = info.dimensions[0] as usize;
+        let n_out = info.dimensions[1] as usize;
+        let bytes = gguf.tensor_bytes(info).unwrap();
+        let f32w = gguf.dequantize_tensor("blk.0.attn_output.weight").unwrap();
+        let w = QuantMat::new(TensorType::Q4K, bytes.to_vec(), f32w, n_in, n_out);
+        std::env::set_var("MILTON_Q8K", "1");
+        std::env::set_var("MILTON_REPACK", "1");
+        for (inp, refer, label) in cases {
+            let Some(x) = load_dump_f32(std::path::Path::new(inp)) else {
+                eprintln!("skip {label}: missing {inp}");
+                continue;
+            };
+            let Some(exp) = load_dump_f32(std::path::Path::new(refer)) else {
+                eprintln!("skip {label}: missing {refer}");
+                continue;
+            };
+            assert_eq!(x.len(), exp.len());
+            assert_eq!(x.len() % n_in, 0);
+            let n_tok = x.len() / n_in;
+            let mut y = vec![0.0f32; n_tok * n_out];
+            matmul_ggml(&x, &w, n_tok, &mut y);
+            let mut max_abs = 0.0f32;
+            let mut ndiff = 0usize;
+            let mut at = 0usize;
+            for i in 0..y.len() {
+                let d = (y[i] - exp[i]).abs();
+                if d > 0.0 {
+                    ndiff += 1;
+                }
+                if d > max_abs {
+                    max_abs = d;
+                    at = i;
+                }
+            }
+            eprintln!(
+                "q4k GEMV kqv_out-0 {label} n={nt} max_abs={max_abs:.8e} ndiff={ndiff} at={at} y={y0:.8} exp={e0:.8}",
+                nt = y.len(),
+                y0 = y[0],
+                e0 = exp[0]
+            );
+            if label == "empty-none" {
+                assert_eq!(ndiff, 0, "empty-none kqv_out FMA GEMV must be BIT_EXACT, max_abs={max_abs}");
+            }
+        }
+
+        // Next leftover after matched kqv_out: dump ffn_inp → Q4_K ffn_up.
+        let ffn_cases = [
+            (
+                "ffn_up",
+                "blk.0.ffn_up.weight",
+                "/tmp/ll-emb-empty/ll-ffn_inp-0.f32",
+                "/tmp/ll-emb-empty/ll-ffn_up-0__MUL_MAT__32.f32",
+            ),
+            (
+                "ffn_gate",
+                "blk.0.ffn_gate.weight",
+                "/tmp/ll-emb-empty/ll-ffn_inp-0.f32",
+                "/tmp/ll-emb-empty/ll-ffn_gate-0__MUL_MAT__31.f32",
+            ),
+            (
+                "ffn_out",
+                "blk.0.ffn_down.weight",
+                "/tmp/ll-emb-empty/ll-ffn_swiglu-0__GLU__33.f32",
+                "/tmp/ll-emb-empty/ll-ffn_out-0__MUL_MAT__34.f32",
+            ),
+        ];
+        for (label, tname, inp, refer) in ffn_cases {
+            let Some(info) = gguf.tensor(tname) else {
+                continue;
+            };
+            let n_in = info.dimensions[0] as usize;
+            let n_out = info.dimensions[1] as usize;
+            let bytes = gguf.tensor_bytes(info).unwrap();
+            let f32w = gguf.dequantize_tensor(tname).unwrap();
+            let w = QuantMat::new(info.tensor_type, bytes.to_vec(), f32w, n_in, n_out);
+            let Some(x) = load_dump_f32(std::path::Path::new(inp)) else {
+                continue;
+            };
+            let Some(exp) = load_dump_f32(std::path::Path::new(refer)) else {
+                continue;
+            };
+            let n_tok = x.len() / n_in;
+            let mut y = vec![0.0f32; n_tok * n_out];
+            matmul_ggml(&x, &w, n_tok, &mut y);
+            let mut max_abs = 0.0f32;
+            let mut ndiff = 0usize;
+            for i in 0..y.len() {
+                let d = (y[i] - exp[i]).abs();
+                if d > 0.0 {
+                    ndiff += 1;
+                }
+                max_abs = max_abs.max(d);
+            }
+            eprintln!(
+                "q4k GEMV empty-none {label} n={} max_abs={max_abs:.8e} ndiff={ndiff} {}",
+                y.len(),
+                if ndiff == 0 { "BIT_EXACT" } else { "DIFF" }
+            );
+        }
     }
 }

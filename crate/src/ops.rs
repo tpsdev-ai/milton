@@ -170,7 +170,9 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// pooled). Intermediate dump kq is still not the golden path.
 /// Isolated vs dump-exact inputs from that same llama-embedding run
 /// (MUL_MAT aliases, not CONT): Q5_K wqkv-0 BIT_EXACT; LN ffn_inp-0
-/// BIT_EXACT; Q6_K ffn_out-0/11 BIT_EXACT; Q4_K GEMV ≤3.8e-6; softmax
+/// BIT_EXACT; Q6_K ffn_out-0/11 BIT_EXACT; Q4_K GEMV FMA BIT_EXACT on
+/// empty-none kqv_out (mul+add was 4.77e-7); document leftover 3.81e-6
+/// matches the pin DSO GEMV. softmax
 /// BIT_EXACT on dump kq. First DIFF after matched kq is V-mix (`kqv`):
 /// serial `acc += a*v` is 1.19e-7 vs dump; `fmaf(a, v, acc)` is
 /// BIT_EXACT on empty-none (n=2). Landed that FMA on the serial path
