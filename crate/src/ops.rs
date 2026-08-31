@@ -79,6 +79,15 @@ pub fn softmax_inplace(logits: &mut [f32]) {
 
 /// llama.cpp `LLAMA_ROPE_TYPE_NEOX` + `ggml_rope_cache_init` with ext_factor=0,
 /// freq_scale=1, attn_factor=1 (no YaRN). Pairs (x[i], x[i + n_dims/2]).
+///
+/// Cache matches C libm `powf`/`cosf`/`sinf` (Rust `powf`/`cos`/`sin` is
+/// bit-exact vs those on this toolchain). Token 0 is identity. The first
+/// bit miss vs the eval-callback dump was the apply: ggml's AVX2 build
+/// contracts
+///   `x0*cos - x1*sin` → `fmaf(x0, cos, -(x1*sin))`
+///   `x0*sin + x1*cos` → `fmaf(x0, sin,  x1*cos)`
+/// The other order (`fmaf(-x1, sin, x0*cos)`) disagrees with the dump.
+/// Do not revert to mul+sub.
 pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_dim: usize, freq_base: f32) {
     debug_assert_eq!(x.len(), n_tokens * n_heads * head_dim);
     debug_assert!(head_dim % 2 == 0);
@@ -99,8 +108,8 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
                 let x1 = x[base + i + half];
                 let cos_t = cache[2 * i];
                 let sin_t = cache[2 * i + 1];
-                x[base + i] = x0 * cos_t - x1 * sin_t;
-                x[base + i + half] = x0 * sin_t + x1 * cos_t;
+                x[base + i] = x0.mul_add(cos_t, -(x1 * sin_t));
+                x[base + i + half] = x0.mul_add(sin_t, x1 * cos_t);
             }
         }
     }
@@ -138,13 +147,13 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
 ///
 /// Q@K stays serial f32. `wqkv-0` Q5_K is bit-exact vs the dump after
-/// matching DSO `vfmadd231ss` on `summs`. First remaining DIFF is
-/// `Qcur-0` RoPE (document 9.54e-7 / empty-none 4.77e-7); `Vcur-0` is
-/// bit-exact. llama.cpp dispatches the **same** `ggml_vec_dot_f32`
-/// AVX2 kernel for n=2 and n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot
-/// n=head_dim=64). Enabling that kernel globally avalanches
-/// `empty-none`. Do not land `2d36deb`. Do not invent a n=7-only AVX2
-/// Q@K split llama does not use.
+/// matching DSO `vfmadd231ss` on `summs`. `Qcur-0`/`Kcur-0` RoPE is
+/// bit-exact after matching ggml's apply FMA
+/// (`fmaf(x0,c,-(x1*s))` / `fmaf(x0,s,x1*c)`). `Vcur-0` is bit-exact.
+/// llama.cpp dispatches the **same** `ggml_vec_dot_f32` AVX2 kernel
+/// for n=2 and n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot n=head_dim=64).
+/// Enabling that kernel globally avalanches `empty-none`. Do not land
+/// `2d36deb`. Do not invent a n=7-only AVX2 Q@K split llama does not use.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
@@ -298,6 +307,20 @@ mod tests {
         let orig = x.clone();
         rope_neox_inplace(&mut x, 1, 1, 4, 1000.0);
         assert_eq!(x, orig);
+    }
+
+    #[test]
+    fn rope_apply_uses_ggml_fma_pairing() {
+        // Dump pair t=1 h=0 i=2 on short-hello-document. ggml contracts
+        // `x0*c - x1*s` as fmaf(x0, c, -(x1*s)), not fmaf(-x1, s, x0*c).
+        let x0 = f32::from_bits(0xbfc83027); // -0x1.90604ep+0
+        let x1 = f32::from_bits(0xbef72f7c); // -0x1.ee5ef8p-2
+        let c = f32::from_bits(0x3f4be4aa); //  0x1.97c954p-1
+        let s = f32::from_bits(0x3f1acd39); //  0x1.359a72p-1
+        let y0 = x0.mul_add(c, -(x1 * s));
+        assert_eq!(y0.to_bits(), 0xbf7425a1); // -0x1.e84b42p-1 (dump)
+        assert_ne!(y0.to_bits(), (x0 * c - x1 * s).to_bits());
+        assert_ne!(y0.to_bits(), (-x1).mul_add(s, x0 * c).to_bits());
     }
 
     #[test]
