@@ -8,11 +8,16 @@ deliberately-wrong embedding.
 
 ## The reference (the oracle)
 
-- **Model:** nomic-embed-text-v1.5, GGUF, **mean pooling**, via **llama.cpp** — the exact
-  path Flair uses today (Harper `models.embed` → harper-fabric-embeddings → llama.cpp).
-- **Prefix convention:** nomic's `search_query:` / `search_document:` prefixes, applied as
-  Flair applies them. The harness must replicate this exactly — a prefix mismatch is a
-  silent recall bug, not a rounding difference.
+- **v1 oracle:** nomic-embed-text-v1.5, GGUF, via **llama.cpp** — the exact path Flair
+  uses today (Harper `models.embed` → harper-fabric-embeddings → llama.cpp). Mean
+  pooling and the rest of the arch come from the file, not from a nomic-shaped
+  hardcode. The engine is GGUF-driven; this pin is verified-first. Do not loosen
+  epsilon.
+- **Prefix convention:** config, not code. v1's config is nomic's `search_query:` /
+  `search_document:` prefixes, applied as Flair applies them. The harness must
+  replicate the configured prefixes exactly — a prefix mismatch is a silent recall
+  bug, not a rounding difference. A second BERT-family file (bge / gte / e5 /
+  nomic-v2) is a new golden pin + prefix config, not a harness rewrite.
 - **Reference vectors are generated once, pinned, and committed** (or content-addressed):
   for a fixed conformance corpus, run the reference and store `{text, prefix, vector}`.
   These are the golden set. Pin the exact GGUF file digest + llama.cpp commit that
