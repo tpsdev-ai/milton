@@ -137,10 +137,17 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
 ///
-/// Q@K stays scalar f32. An AVX2 `ggml_vec_dot_f32` port on this path
-/// broke `empty-none` (cos_dist 0 → 0.025) the same way AVX2 SiLU did.
-/// Do not re-enable without an `empty-none` receipt. First gate-breaking
-/// leftover vs llama is Q4_K GEMM vs GEMV (`qmatmul.rs`), not F32 Q@K.
+/// Q@K stays serial f32. Probe vs pinned `libggml-cpu.so` `ggml_vec_dot_f32`
+/// and the eval-callback `kq` dump (`short-hello-document` / `empty-none`):
+/// the AVX2 4-accum FMA + `GGML_F32x8_REDUCE` path is **bit-exact** on
+/// llama's own Q/K (max_abs=0). On Milton Q/K it is the first remaining
+/// diverge (`kq-0` 7.6e-5 unscaled) **and** it avalanches `empty-none`
+/// (cos_dist 0 → 0.02518585, max_abs 0.03100102) — same receipt as
+/// `2d36deb` / AVX2 SiLU. f64 (`ggml_float`) serial also breaks
+/// `empty-none` (0.02621667). Do **not** dispatch AVX2 `vec_dot` or
+/// `_mm_hadd_ps` here without an `empty-none` PASS (cos_dist=0,
+/// max_abs≤1e-5). GEMV-only Q4_K stays; leftover after that port is
+/// this kq residual → Q8_K `nearest_int` at `ffn_out-1` (1.526e-5).
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
