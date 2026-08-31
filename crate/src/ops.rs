@@ -151,11 +151,14 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// bit-exact after matching ggml's apply FMA
 /// (`fmaf(x0,c,-(x1*s))` / `fmaf(x0,s,x1*c)`). `Vcur-0` is bit-exact.
 /// First remaining dump DIFF is `kq-0` serial f32 (document 6.10e-5 /
-/// empty-none 1.53e-5). llama.cpp dispatches the **same**
-/// `ggml_vec_dot_f32` AVX2 kernel for n=2 and n=7 (`tinyBLAS` rejects
-/// `m%4!=0`; vec_dot n=head_dim=64). Enabling that kernel globally
-/// avalanches `empty-none`. Do not land `2d36deb`. Do not invent a
-/// n=7-only AVX2 Q@K split llama does not use.
+/// empty-none 1.53e-5). On bit-exact `Qcur-0`/`Kcur-0` the first miss
+/// is serial `dot += q*k` vs ggml's 4×8 `mul_add` + pairwise hadd
+/// (`GGML_F32_STEP=32`). That tree, AVX2 intrinsics, and DSO
+/// `ggml_vec_dot_f32` are BIT_EXACT vs the `kq` dump (n=2 and n=7).
+/// Porting the tree (portable or AVX2) avalanches `empty-none`:
+/// expected PASS cos_dist≈0 max_abs=7.86e-8; got cos_dist=0.03114
+/// max_abs=0.03411 d0 0.00697820 vs 0.02447182. Keep serial Q@K.
+/// Do not land `2d36deb`. Do not dispatch AVX2 `ggml_vec_dot_f32`.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
