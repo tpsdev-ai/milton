@@ -1,0 +1,29 @@
+[package]
+name = "milton"
+version = "0.0.0"
+edition = "2021"
+license = "UNLICENSED"
+description = "In-process nomic-embed-text-v1.5 embeddings for Flair (tokenizer slice)"
+publish = false
+repository = "https://github.com/tpsdev-ai/milton"
+
+[lib]
+name = "milton"
+path = "src/lib.rs"
+
+[[bin]]
+name = "milton-tokenize"
+path = "src/bin/milton-tokenize.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+cli = ["dep:serde_json"]
+
+[dependencies]
+unicode-general-category = "1.0"
+unicode-normalization = "0.1.24"
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+serde_json = "1"

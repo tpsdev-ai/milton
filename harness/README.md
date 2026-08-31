@@ -80,6 +80,8 @@ If the Flair path cannot run here, the bench script exits `2` and writes `BLOCKE
 ```
 harness/corpus/corpus.json     fixed cases; each documents the failure mode it traps
 harness/goldens/vectors.json   pinned reference vectors
+harness/goldens/tokens.json    pinned reference token-ID sequences (tokenizer slice)
+harness/goldens/tokenizer-pin.json  HF nomic tokenizer source + file digests
 harness/goldens/pin.json       GGUF digest + llama.cpp commit/digest
 harness/goldens/epsilon.json   derived tolerances + the measurement that produced them
 harness/goldens/controls.json  CLS-pooled must-fail fixture
@@ -88,3 +90,4 @@ harness/scripts/               setup / generate / derive / gate / bench
 harness/test/                  must-fail + unit tests (node:test)
 harness/vendor/                llama.cpp + GGUF (not committed, not shipped)
 ```
+

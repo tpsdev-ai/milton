@@ -1,0 +1,108 @@
+{
+  "schema": "milton.tokenizer-pin/1",
+  "model": "nomic-embed-text-v1.5",
+  "tokenizer_class": "BertTokenizer",
+  "source": {
+    "kind": "huggingface",
+    "repo": "nomic-ai/nomic-embed-text-v1.5",
+    "revision": "e9b6763023c676ca8431644204f50c2b100d9aab",
+    "files": {
+      "tokenizer.json": {
+        "path": "harness/goldens/tokenizer/tokenizer.json",
+        "sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+        "bytes": 711396
+      },
+      "tokenizer_config.json": {
+        "path": "harness/goldens/tokenizer/tokenizer_config.json",
+        "sha256": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc",
+        "bytes": 1191
+      },
+      "vocab.txt": {
+        "path": "crate/vocab/vocab.txt",
+        "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+        "bytes": 231508,
+        "n_tokens": 30522
+      }
+    },
+    "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/tree/e9b6763023c676ca8431644204f50c2b100d9aab"
+  },
+  "oracle": {
+    "package": "tokenizers",
+    "package_version": "0.21.0",
+    "loader": "Tokenizer.from_file(tokenizer.json)",
+    "note": "Official HF rust tokenizers binding loading nomic's committed tokenizer.json (BertNormalizer + BertPreTokenizer + WordPiece + [CLS]/[SEP])."
+  },
+  "prefix_convention": {
+    "document": "search_document: {text}",
+    "query": "search_query: {text}",
+    "none": "{text}",
+    "source": "flair resources/embeddings-provider.ts + harper-fabric-embeddings src/engine.ts NOMIC_TEMPLATES; replicated in harness/lib/prefix.js"
+  },
+  "pipeline": {
+    "normalizer": {
+      "type": "BertNormalizer",
+      "clean_text": true,
+      "handle_chinese_chars": true,
+      "strip_accents": null,
+      "lowercase": true,
+      "strip_accents_effective": true
+    },
+    "pre_tokenizer": "BertPreTokenizer",
+    "model": {
+      "type": "WordPiece",
+      "unk_token": "[UNK]",
+      "continuing_subword_prefix": "##",
+      "max_input_chars_per_word": 100
+    },
+    "post_processor": "[CLS] $A [SEP]",
+    "special_ids": {
+      "PAD": 0,
+      "UNK": 100,
+      "CLS": 101,
+      "SEP": 102,
+      "MASK": 103
+    }
+  },
+  "corpus_digest": "6b2e06b958e8196cfdb6787c4f9d8467a6c9da34a79cd9a910d973dc3f99d122",
+  "tokens_digest": "8e009a0b027f4344c59dd36a5c8eedb28f8b571c9a99c555e32136a8c615013b",
+  "n_cases": 18,
+  "observed": {
+    "nfc_nfd_ids_equal": true,
+    "nfc_nfd_note": "BERT strip_accents (NFD + drop Mn) collapses unicode-nfc and unicode-nfd to the same token IDs. The corpus trap prose anticipated they would not collide; the pinned HF nomic tokenizer does. Goldens record the reference, not the trap guess.",
+    "llamacpp_crosscheck": {
+      "llamacpp_commit": "61bdfd5298a78593be649a1035ee2a120b13c4f0",
+      "method": "llama-embedding --verbose-prompt on the same prefixed corpus bytes",
+      "exact_id_match": "15/18",
+      "matches": [
+        "short-hello-document",
+        "short-hello-query",
+        "short-hello-none",
+        "unicode-cjk-emoji",
+        "unicode-nfc",
+        "whitespace-padded",
+        "empty-document",
+        "empty-none",
+        "punctuation-only",
+        "long-repeated",
+        "prefix-already-present",
+        "numeric-ids",
+        "flair-memory-preference",
+        "flair-memory-decision",
+        "flair-query-recall"
+      ],
+      "diffs": {
+        "unicode-nfd": {
+          "hf": [101, 3945, 1035, 6254, 1024, 7668, 13746, 15743, 102],
+          "llamacpp": [101, 3945, 1035, 6254, 1024, 100, 100, 100, 102],
+          "note": "Real tokenizer difference. llama.cpp WPM leaves combining marks; WordPiece then emits [UNK]. HF BertNormalizer strip_accents drops Mn, so NFD becomes cafe/resume/naive like NFC. This slice pins the official nomic HF tokenizer.json. Issue #5 (forward vs llama.cpp vectors) must treat unicode-nfd as a known HF↔llama.cpp tokenizer split."
+        },
+        "whitespace-only": {
+          "note": "llama-embedding -f splits the prompt on the embedded newline, so --verbose-prompt prints two sequences (extra CLS/SEP). Not a WordPiece ID disagreement on the concatenated string."
+        },
+        "newlines-tabs": {
+          "note": "Same llama-embedding newline-as-prompt-separator artifact (CLS/SEP inserted at CR/LF). Not a WordPiece ID disagreement."
+        }
+      }
+    }
+  }
+}
