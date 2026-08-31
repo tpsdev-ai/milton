@@ -6,3 +6,7 @@ harness/vendor/
 harness/models/
 target/
 crate/target/
+*.gguf
+harness/.cache/
+harness/receipts/*.json
+*.node
