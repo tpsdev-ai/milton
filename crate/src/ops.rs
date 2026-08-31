@@ -28,11 +28,13 @@ pub fn layer_norm(x: &[f32], weight: &[f32], bias: &[f32], eps: f32, out: &mut [
     }
 }
 
-/// ggml `ggml_silu_f32`: x / (1 + exp(-x)).
+/// ggml `ggml_silu_f32`: x / (1 + exp(-x)). Stay on libm.
 ///
-/// AVX2 `ggml_vec_silu_f32` / `ggml_v_expf` is a different numeric path:
-/// it broke `empty-none` vs the pinned goldens (cos_dist 0 → 0.025).
-/// Stay on libm. Do not re-enable vec-silu without an `empty-none` receipt.
+/// Pin dump `ffn_swiglu` leftover vs this is ~2.7e-7 (empty-none 1.93e-7,
+/// document 2.69e-7). AVX2 `ggml_vec_swiglu_f32` / `ggml_v_silu` /
+/// `ggml_v_expf` is BIT_EXACT vs that dump (DSO too) and empty-none FINAL
+/// stayed PASS, but short-hello-none avalanched (cos_dist 0 → 0.01108,
+/// max_abs 0.01775). Same class as dump-kq / Q4_K GEMV FMA. Do not land.
 #[inline]
 pub fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
