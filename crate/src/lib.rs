@@ -1,5 +1,10 @@
 //! Milton crate — tokenizer + GGUF dequant for nomic-embed-text-v1.5.
 //! Forward / mean-pool / L2 and WASM packaging are later slices.
+//!
+//! Tokenizer core (`tokenize`, `apply_prefix`) is pure. Vocab is embedded
+//! from the pinned `vocab.txt`. Dequant correctness is defined against
+//! llama.cpp of the pinned GGUF (`harness/goldens/pin.json`). camelid
+//! patterns are mirrored, not vendored. An unverified path refuses.
 
 mod prefix;
 mod tokenizer;
@@ -24,7 +29,7 @@ pub use meta::ModelMeta;
 impl GgufFile {
     /// Load the pinned nomic-embed-text-v1.5 GGUF and refuse unknown architectures.
     pub fn load_nomic_v15(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let file = Self::load(path)?;
+        let file = Self::open(path)?;
         file.nomic_v15_meta()?;
         Ok(file)
     }
@@ -33,95 +38,97 @@ impl GgufFile {
     pub fn nomic_v15_meta(&self) -> Result<ModelMeta> {
         ModelMeta::from_gguf(self)
     }
+
+    /// Dequantize one named tensor to a flat f32 vector. Refuses unknown types.
+    pub fn dequantize_tensor(&self, name: &str) -> Result<Vec<f32>> {
+        let info = self
+            .tensor(name)
+            .ok_or_else(|| Error::MissingTensor(name.to_string()))?;
+        let bytes = self.tensor_bytes(info)?;
+        dequantize(info.tensor_type, bytes, info.n_elements() as usize, name)
+    }
+
+    pub fn model_meta(&self) -> Result<ModelMeta> {
+        ModelMeta::from_gguf(self)
+    }
 }
 
-/// Cosine distance `1 - cos(a, b)`. Length mismatch → 1.0 (fail closed).
-pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 1.0;
+/// Cosine similarity. Identical to the harness gate.
+pub fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        return None;
     }
     let mut dot = 0.0f64;
     let mut na = 0.0f64;
     let mut nb = 0.0f64;
     for i in 0..a.len() {
-        let x = a[i] as f64;
-        let y = b[i] as f64;
+        let x = f64::from(a[i]);
+        let y = f64::from(b[i]);
         dot += x * y;
         na += x * x;
         nb += y * y;
     }
-    if na == 0.0 || nb == 0.0 {
-        return 1.0;
+    let denom = na.sqrt() * nb.sqrt();
+    if denom == 0.0 {
+        return Some(if na == 0.0 && nb == 0.0 { 1.0 } else { 0.0 });
     }
-    (1.0 - dot / (na.sqrt() * nb.sqrt())) as f32
+    Some((dot / denom) as f32)
 }
 
-/// Compare one dequantized row to a golden. Same formula as `harness/lib/compare.mjs`.
-pub fn compare_vectors(
-    got: &[f32],
-    expected: &[f32],
-    epsilon: f64,
-    epsilon_abs: f64,
-) -> CompareResult {
-    if got.len() != expected.len() {
-        return CompareResult {
-            ok: false,
-            max_abs: f64::INFINITY,
-            mean_abs: f64::INFINITY,
-            cosine_distance: 1.0,
-            mismatch_reason: Some(format!(
-                "length mismatch: got {} expected {}",
-                got.len(),
-                expected.len()
-            )),
-        };
+pub fn max_abs_diff(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        return None;
     }
-    let mut max_abs = 0.0f64;
-    let mut sum_abs = 0.0f64;
-    for i in 0..got.len() {
-        let d = (got[i] as f64 - expected[i] as f64).abs();
-        if d > max_abs {
-            max_abs = d;
+    let mut max = 0.0f32;
+    for i in 0..a.len() {
+        let d = (a[i] - b[i]).abs();
+        if d > max {
+            max = d;
         }
-        sum_abs += d;
     }
-    let mean_abs = if got.is_empty() {
-        0.0
-    } else {
-        sum_abs / got.len() as f64
-    };
-    let cosine_distance = cosine_distance(got, expected) as f64;
-    let ok = max_abs <= epsilon_abs && cosine_distance <= epsilon;
-    CompareResult {
-        ok,
-        max_abs,
-        mean_abs,
-        cosine_distance,
-        mismatch_reason: if ok {
-            None
-        } else {
-            Some(format!(
-                "max_abs={max_abs} (eps_abs={epsilon_abs}) cosine_distance={cosine_distance} (eps={epsilon})"
-            ))
-        },
-    }
+    Some(max)
 }
 
 #[derive(Debug, Clone)]
-pub struct CompareResult {
-    pub ok: bool,
-    pub max_abs: f64,
-    pub mean_abs: f64,
-    pub cosine_distance: f64,
-    pub mismatch_reason: Option<String>,
+pub struct Compare {
+    pub pass: bool,
+    pub reason: Option<String>,
+    pub cosine: Option<f32>,
+    pub cos_dist: Option<f32>,
+    pub max_abs: Option<f32>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_is_milton() {
-        assert_eq!(env!("CARGO_PKG_NAME"), "milton");
+pub fn compare_vectors(got: &[f32], expected: &[f32], epsilon: f32, epsilon_abs: f32) -> Compare {
+    if got.len() != expected.len() {
+        return Compare {
+            pass: false,
+            reason: Some(format!("dim_mismatch:{}->{}", expected.len(), got.len())),
+            cosine: None,
+            cos_dist: None,
+            max_abs: None,
+        };
+    }
+    let cos = cosine(got, expected).unwrap();
+    let cos_dist = (1.0 - cos).max(0.0);
+    let max_abs = max_abs_diff(got, expected).unwrap();
+    let pass = cos >= 1.0 - epsilon && max_abs <= epsilon_abs;
+    let reason = if pass {
+        None
+    } else {
+        let mut parts = Vec::new();
+        if cos < 1.0 - epsilon {
+            parts.push(format!("cos_dist={cos_dist}"));
+        }
+        if max_abs > epsilon_abs {
+            parts.push(format!("max_abs={max_abs}"));
+        }
+        Some(parts.join(","))
+    };
+    Compare {
+        pass,
+        reason,
+        cosine: Some(cos),
+        cos_dist: Some(cos_dist),
+        max_abs: Some(max_abs),
     }
 }
