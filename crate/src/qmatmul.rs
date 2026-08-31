@@ -21,13 +21,15 @@
 //! and are not used on the embed path.
 //!
 //! After GEMV-only, the first tensor that is **not bit-exact** vs the
-//! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT) on both
-//! `short-hello-document` (max_abs=1.91e-6, 3489 elems) and
-//! `empty-none` (max_abs=4.77e-7, 616 elems). `inp_embd` ADD and
-//! `inp_norm` are bit-exact. Q@K dispatch is the **same** for n=2 and
-//! n=7 (`tinyBLAS` rejects `m % 4 != 0`; `ggml_vec_dot_f32` n=64).
-//! Do not invent another Q5_K kernel. Do not globally enable AVX2
-//! Q@K (avalanches `empty-none`). Do not touch `quantize_row_q8_K`.
+//! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT). There is no
+//! Q5_K REPACK/GEMV/GEMM in the pinned DSO (`tinyBLAS` rejects Q5_K;
+//! AMX is compiled OFF). The graph path is `quantize_row_q8_K` +
+//! AVX2 `ggml_vec_dot_q5_K_q8_K`. That DSO pair is bit-exact on the
+//! dump; DSO generic is 1.91e-6. Milton Q8_K and f16 match the DSO.
+//! The DSO compiles `summs += dmin * extract` as `vfmadd231ss`; a
+//! separate mul+add was 1–16 ulps off (`wqkv-0` 3489 elems). Do not
+//! invent another Q5_K type. Do not globally enable AVX2 Q@K
+//! (avalanches `empty-none`). Do not touch `quantize_row_q8_K`.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
 use crate::gguf::TensorType;
@@ -203,12 +205,72 @@ fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     vec_dot_q5_k_q8_k_generic(w, y)
 }
 
+/// llama.cpp `hsum_float_8` (`quants.c` ~43): pairwise tree, not a scalar
+/// reduction LLVM can reassociate. Store-then-add is the same tree as
+/// extractf128 / movehl / movehdup; `black_box` keeps the order.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn hsum_float_8(x: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    let mut res = _mm256_extractf128_ps::<1>(x);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    std::hint::black_box(_mm_cvtss_f32(res))
+}
+
+/// One QK_K/64 chunk of `ggml_vec_dot_q5_K_q8_K` AVX2. `BIT0`/`BIT1` are
+/// the C `bit++` immediates for `_mm256_srli_epi16` — a runtime
+/// `_mm256_srl_epi16` is a different encoding and was 1–16 ulps off the
+/// pinned DSO on `wqkv-0`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn q5k_avx2_chunk<const BIT0: i32, const BIT1: i32>(
+    scales: std::arch::x86_64::__m256i,
+    shuffle0: *const u8,
+    shuffle1: *const u8,
+    q5: *const u8,
+    q8: *const i8,
+    hbits: std::arch::x86_64::__m256i,
+    hmask: std::arch::x86_64::__m256i,
+    m4: std::arch::x86_64::__m256i,
+    sumi: std::arch::x86_64::__m256i,
+) -> (std::arch::x86_64::__m256i, std::arch::x86_64::__m256i) {
+    use std::arch::x86_64::*;
+    let scale_0 = _mm256_shuffle_epi8(scales, _mm256_loadu_si256(shuffle0.cast()));
+    let scale_1 = _mm256_shuffle_epi8(scales, _mm256_loadu_si256(shuffle1.cast()));
+    let q5bits = _mm256_loadu_si256(q5.cast());
+
+    let q5l_0 = _mm256_and_si256(q5bits, m4);
+    let q5h_0 = _mm256_slli_epi16::<4>(_mm256_srli_epi16::<BIT0>(_mm256_and_si256(hbits, hmask)));
+    let q5_0 = _mm256_add_epi8(q5l_0, q5h_0);
+    let hmask = _mm256_slli_epi16::<1>(hmask);
+
+    let q5l_1 = _mm256_and_si256(_mm256_srli_epi16::<4>(q5bits), m4);
+    let q5h_1 = _mm256_slli_epi16::<4>(_mm256_srli_epi16::<BIT1>(_mm256_and_si256(hbits, hmask)));
+    let q5_1 = _mm256_add_epi8(q5l_1, q5h_1);
+    let hmask = _mm256_slli_epi16::<1>(hmask);
+
+    let q8_0 = _mm256_loadu_si256(q8.cast());
+    let q8_1 = _mm256_loadu_si256(q8.add(32).cast());
+    let p16_0 = _mm256_madd_epi16(scale_0, _mm256_maddubs_epi16(q5_0, q8_0));
+    let p16_1 = _mm256_madd_epi16(scale_1, _mm256_maddubs_epi16(q5_1, q8_1));
+    (
+        _mm256_add_epi32(sumi, _mm256_add_epi32(p16_0, p16_1)),
+        hmask,
+    )
+}
+
 /// llama.cpp `ggml_vec_dot_q5_K_q8_K` AVX2 (`quants.c` ~1919).
 ///
-/// Bit-exact: `maddubs` + `madd_epi16`, `_mm256_fmadd_ps` of `cvtepi32_ps(sumi)`
-/// with broadcast `d` into an 8-wide `acc` across superblocks, mins via
-/// `hadd`/`madd` into scalar `summs`, `hsum_float_8` pairwise order.
+/// Dispatch matches the pinned `libggml-cpu.so`: no Q5_K REPACK/GEMV/GEMM;
+/// `quantize_row_q8_K` + this `vec_dot`. DSO AVX2 is bit-exact on the
+/// `wqkv-0` eval-callback dump; generic is not (1.91e-6). Immediate
+/// `_mm256_srli_epi16::<bit>` is the C `bit++` form.
+/// `summs = dmin.mul_add(extract, summs)` matches the DSO's
+/// `vfmadd231ss` (separate mul+add was 1–16 ulps off).
 #[cfg(target_arch = "x86_64")]
+#[inline(never)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn vec_dot_q5_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
     use std::arch::x86_64::*;
@@ -269,7 +331,9 @@ unsafe fn vec_dot_q5_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
         );
         let prod = _mm_madd_epi16(_mm256_extracti128_si256::<1>(mins_and_scales), q8s);
         let hsum = _mm_hadd_epi32(_mm_hadd_epi32(prod, mzero), mzero);
-        summs += dmin * (_mm_extract_epi32::<0>(hsum) as f32);
+        // DSO (`-mfma`) contracts `summs += dmin * extract` to `vfmadd231ss`.
+        // Separate mul+add is 1–16 ulps off the pinned `wqkv-0` dump.
+        summs = dmin.mul_add(_mm_extract_epi32::<0>(hsum) as f32, summs);
 
         let sc128 = _mm256_extracti128_si256::<0>(mins_and_scales);
         // MM256_SET_M128I(sc128, sc128)
@@ -278,60 +342,56 @@ unsafe fn vec_dot_q5_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
         let hbits = _mm256_loadu_si256(block[16..48].as_ptr().cast());
         let mut hmask = mone;
         let mut sumi = _mm256_setzero_si256();
-        let mut bit = 0i32;
         let q5 = block[48..176].as_ptr();
         let q8 = yb.qs.as_ptr();
+        let sh = K_SHUFFLE.as_ptr();
 
-        for j in 0..QK_K / 64 {
-            let scale_0 = _mm256_shuffle_epi8(
-                scales,
-                _mm256_loadu_si256(K_SHUFFLE.as_ptr().add((2 * j) * 32).cast()),
-            );
-            let scale_1 = _mm256_shuffle_epi8(
-                scales,
-                _mm256_loadu_si256(K_SHUFFLE.as_ptr().add((2 * j + 1) * 32).cast()),
-            );
+        let r = q5k_avx2_chunk::<0, 1>(scales, sh, sh.add(32), q5, q8, hbits, hmask, m4, sumi);
+        sumi = r.0;
+        hmask = r.1;
+        let r = q5k_avx2_chunk::<2, 3>(
+            scales,
+            sh.add(64),
+            sh.add(96),
+            q5.add(32),
+            q8.add(64),
+            hbits,
+            hmask,
+            m4,
+            sumi,
+        );
+        sumi = r.0;
+        hmask = r.1;
+        let r = q5k_avx2_chunk::<4, 5>(
+            scales,
+            sh.add(128),
+            sh.add(160),
+            q5.add(64),
+            q8.add(128),
+            hbits,
+            hmask,
+            m4,
+            sumi,
+        );
+        sumi = r.0;
+        hmask = r.1;
+        let r = q5k_avx2_chunk::<6, 7>(
+            scales,
+            sh.add(192),
+            sh.add(224),
+            q5.add(96),
+            q8.add(192),
+            hbits,
+            hmask,
+            m4,
+            sumi,
+        );
+        sumi = r.0;
 
-            let q5bits = _mm256_loadu_si256(q5.add(j * 32).cast());
-
-            let q5l_0 = _mm256_and_si256(q5bits, m4);
-            let q5h_0 = _mm256_slli_epi16::<4>(_mm256_srl_epi16(
-                _mm256_and_si256(hbits, hmask),
-                _mm_cvtsi32_si128(bit),
-            ));
-            bit += 1;
-            let q5_0 = _mm256_add_epi8(q5l_0, q5h_0);
-            hmask = _mm256_slli_epi16::<1>(hmask);
-
-            let q5l_1 = _mm256_and_si256(_mm256_srli_epi16::<4>(q5bits), m4);
-            let q5h_1 = _mm256_slli_epi16::<4>(_mm256_srl_epi16(
-                _mm256_and_si256(hbits, hmask),
-                _mm_cvtsi32_si128(bit),
-            ));
-            bit += 1;
-            let q5_1 = _mm256_add_epi8(q5l_1, q5h_1);
-            hmask = _mm256_slli_epi16::<1>(hmask);
-
-            let q8_0 = _mm256_loadu_si256(q8.add(j * 64).cast());
-            let q8_1 = _mm256_loadu_si256(q8.add(j * 64 + 32).cast());
-
-            let mut p16_0 = _mm256_maddubs_epi16(q5_0, q8_0);
-            let mut p16_1 = _mm256_maddubs_epi16(q5_1, q8_1);
-            p16_0 = _mm256_madd_epi16(scale_0, p16_0);
-            p16_1 = _mm256_madd_epi16(scale_1, p16_1);
-            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16_0, p16_1));
-        }
-
-        let vd = _mm256_set1_ps(d);
-        acc = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);
+        acc = _mm256_fmadd_ps(_mm256_broadcast_ss(&d), _mm256_cvtepi32_ps(sumi), acc);
     }
 
-    // llama.cpp `hsum_float_8`: high128+low128 → movehl add → movehdup add_ss
-    let mut res = _mm256_extractf128_ps::<1>(acc);
-    res = _mm_add_ps(res, _mm256_castps256_ps128(acc));
-    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
-    res = _mm_add_ss(res, _mm_movehdup_ps(res));
-    _mm_cvtss_f32(res) + summs
+    hsum_float_8(acc) + summs
 }
 
 fn vec_dot_q5_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
@@ -929,6 +989,77 @@ mod tests {
         assert!(
             cos > 0.99,
             "Q8_K matmul drifted from dequant-f32: cos={cos} max_abs={maxd}"
+        );
+    }
+
+    fn load_f32_dump(path: &str) -> Option<Vec<f32>> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).ok()?;
+        let mut n = [0u8; 8];
+        f.read_exact(&mut n).ok()?;
+        let n = i64::from_le_bytes(n) as usize;
+        let mut skip = [0u8; 32];
+        f.read_exact(&mut skip).ok()?;
+        let mut buf = vec![0u8; n * 4];
+        f.read_exact(&mut buf).ok()?;
+        Some(
+            buf.chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn q5k_wqkv0_matches_llama_mul_mat_dump() {
+        let act = match load_f32_dump("/tmp/ll-dump/ll-inp_norm__ADD__5.f32") {
+            Some(v) => v,
+            None => return,
+        };
+        let exp = match load_f32_dump("/tmp/ll-dump/ll-wqkv-0__MUL_MAT__6.f32") {
+            Some(v) => v,
+            None => return,
+        };
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let gguf_path = root.join("harness/vendor/models/nomic-embed-text-v1.5.Q4_K_M.gguf");
+        if !gguf_path.exists() {
+            return;
+        }
+        let gguf = crate::gguf::GgufFile::open(&gguf_path).unwrap();
+        let info = gguf.tensor("blk.0.attn_qkv.weight").unwrap();
+        let n_in = info.dimensions[0] as usize;
+        let n_out = info.dimensions[1] as usize;
+        let bytes = gguf.tensor_bytes(info).unwrap().to_vec();
+        let f32w = gguf.dequantize_tensor("blk.0.attn_qkv.weight").unwrap();
+        let ntok = act.len() / n_in;
+        let w = QuantMat::new(TensorType::Q5K, bytes, f32w, n_in, n_out);
+        std::env::set_var("MILTON_Q8K", "1");
+        let mut got = vec![0.0f32; ntok * n_out];
+        matmul_ggml(&act, &w, ntok, &mut got);
+        let mut mx = 0.0f32;
+        let mut ndiff = 0usize;
+        let mut at = 0usize;
+        for i in 0..got.len() {
+            let d = (got[i] - exp[i]).abs();
+            if d > 0.0 {
+                ndiff += 1;
+            }
+            if d > mx {
+                mx = d;
+                at = i;
+            }
+        }
+        eprintln!(
+            "wqkv-0 vs llama MUL_MAT n={} max_abs={mx:.8e} ndiff={ndiff} at={at} got={} exp={}",
+            got.len(),
+            got[at],
+            exp[at]
+        );
+        assert!(
+            mx < 1e-7,
+            "wqkv-0 Q5_K AVX2 vs llama dump max_abs={mx} ndiff={ndiff} (DSO AVX2 is bit-exact)"
         );
     }
 
