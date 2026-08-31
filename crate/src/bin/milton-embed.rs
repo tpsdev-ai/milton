@@ -64,6 +64,7 @@ fn main() -> ExitCode {
     let mut prefix = "none".to_string();
     let mut jsonl = false;
     let mut fault = ForwardFault::None;
+    let mut dump_hidden = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -80,6 +81,7 @@ fn main() -> ExitCode {
                 prefix = args[i].clone();
             }
             "--jsonl" => jsonl = true,
+            "--hidden" => dump_hidden = true,
             "--wrong" => {
                 i += 1;
                 match parse_fault(&args[i]) {
@@ -185,7 +187,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match model.embed_with_fault(&text, p, fault) {
+    let run = if dump_hidden {
+        model.hidden(&text, p)
+    } else {
+        model.embed_with_fault(&text, p, fault)
+    };
+    match run {
         Ok(v) => {
             println!(
                 "{}",

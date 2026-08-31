@@ -167,6 +167,12 @@ impl Model {
         self.embed_ids(&ids, fault)
     }
 
+    /// Last-layer hidden states, [n_tokens * n_embd], no pool / no L2.
+    pub fn hidden(&self, text: &str, prefix: Prefix) -> Result<Vec<f32>> {
+        let ids = crate::tokenizer::tokenize_prefixed(&self.config.prefix.apply(text, prefix));
+        self.forward_hidden(&ids, ForwardFault::None)
+    }
+
     pub fn embed_ids(&self, ids: &[u32], fault: ForwardFault) -> Result<Vec<f32>> {
         if ids.len() as u64 > self.meta.context_length {
             return Err(Error::ContextLength {
@@ -237,6 +243,7 @@ impl Model {
                 }
             }
         }
+        dump_stage("inp_embd", &x);
 
         let ln_eps = match fault {
             ForwardFault::WrongLayernorm => 1.0,
@@ -253,6 +260,7 @@ impl Model {
             );
         }
         x.copy_from_slice(&y);
+        dump_stage("inp_norm", &x);
 
         let mut qkv = vec![0.0f32; n_tok * 3 * n_embd];
         let mut attn_out = vec![0.0f32; n_tok * n_embd];
@@ -269,8 +277,11 @@ impl Model {
 
         let variant = forward_variant();
 
-        for layer in &self.weights.layers {
+        for (li, layer) in self.weights.layers.iter().enumerate() {
             matmul_ggml(&x, &layer.attn_qkv, n_tok, &mut qkv);
+            if li == 0 {
+                dump_stage("wqkv-0", &qkv);
+            }
             if let Some(ref b) = layer.attn_qkv_bias {
                 for t in 0..n_tok {
                     for i in 0..3 * n_embd {
@@ -290,7 +301,15 @@ impl Model {
                     rope_neox_inplace(&mut k, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
                 }
             }
+            if li == 0 {
+                dump_stage("Qcur-0", &q);
+                dump_stage("Kcur-0", &k);
+                dump_stage("Vcur-0", &v);
+            }
             attention(&q, &k, &v, n_tok, self.n_head, self.head_dim, &mut attn_out);
+            if li == 0 {
+                dump_stage("kqv-0", &attn_out);
+            }
             matmul_ggml(&attn_out, &layer.attn_output, n_tok, &mut proj);
             if let Some(ref b) = layer.attn_output_bias {
                 for t in 0..n_tok {
@@ -298,6 +317,9 @@ impl Model {
                         proj[t * n_embd + i] += b[i];
                     }
                 }
+            }
+            if li == 0 {
+                dump_stage("kqv_out-0", &proj);
             }
             for t in 0..n_tok {
                 for i in 0..n_embd {
@@ -312,6 +334,9 @@ impl Model {
                 );
             }
             x.copy_from_slice(&y);
+            if li == 0 {
+                dump_stage("ffn_inp-0", &x);
+            }
 
             match &layer.ffn_gate {
                 Some(gate_w) => {
@@ -334,6 +359,7 @@ impl Model {
                 }
             }
             matmul_ggml(&ffn_hid, &layer.ffn_down, n_tok, &mut ffn_down);
+            dump_stage(&format!("ffn_out-{li}"), &ffn_down);
             for t in 0..n_tok {
                 for i in 0..n_embd {
                     ffn_down[t * n_embd + i] += x[t * n_embd + i];
@@ -347,7 +373,9 @@ impl Model {
                 );
             }
             x.copy_from_slice(&y);
+            dump_stage(&format!("layer_out-{li}"), &x);
         }
+        dump_stage("result_embd", &x);
         Ok(x)
     }
 }
@@ -416,6 +444,23 @@ fn split_qkv(
         k[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[n_embd..2 * n_embd]);
         v[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[2 * n_embd..3 * n_embd]);
     }
+}
+
+fn dump_stage(name: &str, x: &[f32]) {
+    if std::env::var("MILTON_DUMP").ok().as_deref() != Some("1") {
+        return;
+    }
+    let path = format!("/tmp/ml-{name}.f32");
+    let mut bytes = Vec::with_capacity(8 + x.len() * 4);
+    bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes()); // placeholder ne[0..3] unused
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    for &v in x {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let _ = std::fs::write(&path, bytes);
 }
 
 fn mean_pool_skip(

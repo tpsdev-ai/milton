@@ -154,13 +154,7 @@ fn load_mat(gguf: &GgufFile, name: &str, n_in: usize, n_out: usize) -> Result<Qu
     let bytes = gguf.tensor_bytes(info)?.to_vec();
     let f32w = gguf.dequantize_tensor(name)?;
     expect_len(name, f32w.len(), n_in * n_out)?;
-    Ok(QuantMat {
-        ty: info.tensor_type,
-        bytes,
-        f32: f32w,
-        n_in,
-        n_out,
-    })
+    Ok(QuantMat::new(info.tensor_type, bytes, f32w, n_in, n_out))
 }
 
 fn optional_tensor(gguf: &GgufFile, name: &str) -> Result<Option<Vec<f32>>> {
