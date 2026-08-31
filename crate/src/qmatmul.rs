@@ -6,8 +6,9 @@
 //! Q5_K uses AVX2 `ggml_vec_dot_q5_K_q8_K` (`quants.c`) when AVX2+FMA is
 //! present — generic `vec_dot` is a different numeric path and seeds a
 //! ~2e-6 residual that later Q8_K `nearest_int` flips compound. Q6_K
-//! stays on generic 8-lane `vec_dot` until Q5_K is bit-exact.
-//! Matching the gate (1e-5 max_abs) requires this path, not dequant-to-f32.
+//! uses AVX2 `ggml_vec_dot_q6_K_q8_K` the same way (generic 8-lane is
+//! fallback only). Matching the gate (1e-5 max_abs) requires this path,
+//! not dequant-to-f32.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
 use crate::gguf::TensorType;
@@ -383,6 +384,148 @@ fn vec_dot_q5_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
 }
 
 fn vec_dot_q6_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { vec_dot_q6_k_q8_k_avx2(w, y) };
+        }
+    }
+    vec_dot_q6_k_q8_k_generic(w, y)
+}
+
+/// llama.cpp `ggml_vec_dot_q6_K_q8_K` AVX2 (`quants.c` ~2129).
+///
+/// Bit-exact: 6-bit reconstruct, (−32) via `maddubs(m32s, q8)` subtract,
+/// `madd_epi16` of `cvtepi8_epi16` scales, `_mm256_fmadd_ps` of
+/// `broadcast_ss(d)` into 8-wide `acc` across superblocks, `hsum_float_8`
+/// pairwise order.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn vec_dot_q6_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
+    use std::arch::x86_64::*;
+
+    debug_assert_eq!(w.len(), y.len() * Q6_K_BYTES);
+
+    // llama.cpp `get_scale_shuffle` — 8×16-byte rows (`_mm_shuffle_epi8`).
+    #[rustfmt::skip]
+    const K_SHUFFLE: [u8; 128] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+        4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5,
+        6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7,
+        8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9,
+        10,10,10,10,10,10,10,10, 11,11,11,11,11,11,11,11,
+        12,12,12,12,12,12,12,12, 13,13,13,13,13,13,13,13,
+        14,14,14,14,14,14,14,14, 15,15,15,15,15,15,15,15,
+    ];
+
+    let m4 = _mm256_set1_epi8(0x0F);
+    let m2 = _mm256_set1_epi8(3);
+    let m32s = _mm256_set1_epi8(32);
+
+    let mut acc = _mm256_setzero_ps();
+
+    for (i, yb) in y.iter().enumerate() {
+        let block = &w[i * Q6_K_BYTES..(i + 1) * Q6_K_BYTES];
+        let d = yb.d * f16_to_f32(u16::from_le_bytes([block[208], block[209]]));
+
+        let q4 = block[0..128].as_ptr();
+        let qh = block[128..192].as_ptr();
+        let q8 = yb.qs.as_ptr();
+        let scales = _mm_loadu_si128(block[192..208].as_ptr().cast());
+
+        let mut sumi = _mm256_setzero_si256();
+        let mut is = 0usize;
+
+        for j in 0..QK_K / 128 {
+            let scale_0 = _mm_shuffle_epi8(
+                scales,
+                _mm_loadu_si128(K_SHUFFLE.as_ptr().add((is + 0) * 16).cast()),
+            );
+            let scale_1 = _mm_shuffle_epi8(
+                scales,
+                _mm_loadu_si128(K_SHUFFLE.as_ptr().add((is + 1) * 16).cast()),
+            );
+            let scale_2 = _mm_shuffle_epi8(
+                scales,
+                _mm_loadu_si128(K_SHUFFLE.as_ptr().add((is + 2) * 16).cast()),
+            );
+            let scale_3 = _mm_shuffle_epi8(
+                scales,
+                _mm_loadu_si128(K_SHUFFLE.as_ptr().add((is + 3) * 16).cast()),
+            );
+            is += 4;
+
+            let q4bits1 = _mm256_loadu_si256(q4.add(j * 64).cast());
+            let q4bits2 = _mm256_loadu_si256(q4.add(j * 64 + 32).cast());
+            let q4bits_h = _mm256_loadu_si256(qh.add(j * 32).cast());
+
+            let q4h_0 = _mm256_slli_epi16::<4>(_mm256_and_si256(q4bits_h, m2));
+            let q4h_1 = _mm256_slli_epi16::<4>(_mm256_and_si256(
+                _mm256_srli_epi16::<2>(q4bits_h),
+                m2,
+            ));
+            let q4h_2 = _mm256_slli_epi16::<4>(_mm256_and_si256(
+                _mm256_srli_epi16::<4>(q4bits_h),
+                m2,
+            ));
+            let q4h_3 = _mm256_slli_epi16::<4>(_mm256_and_si256(
+                _mm256_srli_epi16::<6>(q4bits_h),
+                m2,
+            ));
+
+            let q4_0 = _mm256_or_si256(_mm256_and_si256(q4bits1, m4), q4h_0);
+            let q4_1 = _mm256_or_si256(_mm256_and_si256(q4bits2, m4), q4h_1);
+            let q4_2 = _mm256_or_si256(
+                _mm256_and_si256(_mm256_srli_epi16::<4>(q4bits1), m4),
+                q4h_2,
+            );
+            let q4_3 = _mm256_or_si256(
+                _mm256_and_si256(_mm256_srli_epi16::<4>(q4bits2), m4),
+                q4h_3,
+            );
+
+            let q8_0 = _mm256_loadu_si256(q8.add(j * 128).cast());
+            let q8_1 = _mm256_loadu_si256(q8.add(j * 128 + 32).cast());
+            let q8_2 = _mm256_loadu_si256(q8.add(j * 128 + 64).cast());
+            let q8_3 = _mm256_loadu_si256(q8.add(j * 128 + 96).cast());
+
+            let q8s_0 = _mm256_maddubs_epi16(m32s, q8_0);
+            let q8s_1 = _mm256_maddubs_epi16(m32s, q8_1);
+            let q8s_2 = _mm256_maddubs_epi16(m32s, q8_2);
+            let q8s_3 = _mm256_maddubs_epi16(m32s, q8_3);
+
+            let mut p16_0 = _mm256_maddubs_epi16(q4_0, q8_0);
+            let mut p16_1 = _mm256_maddubs_epi16(q4_1, q8_1);
+            let mut p16_2 = _mm256_maddubs_epi16(q4_2, q8_2);
+            let mut p16_3 = _mm256_maddubs_epi16(q4_3, q8_3);
+
+            p16_0 = _mm256_sub_epi16(p16_0, q8s_0);
+            p16_1 = _mm256_sub_epi16(p16_1, q8s_1);
+            p16_2 = _mm256_sub_epi16(p16_2, q8s_2);
+            p16_3 = _mm256_sub_epi16(p16_3, q8s_3);
+
+            p16_0 = _mm256_madd_epi16(_mm256_cvtepi8_epi16(scale_0), p16_0);
+            p16_1 = _mm256_madd_epi16(_mm256_cvtepi8_epi16(scale_1), p16_1);
+            p16_2 = _mm256_madd_epi16(_mm256_cvtepi8_epi16(scale_2), p16_2);
+            p16_3 = _mm256_madd_epi16(_mm256_cvtepi8_epi16(scale_3), p16_3);
+
+            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16_0, p16_1));
+            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16_2, p16_3));
+        }
+
+        acc = _mm256_fmadd_ps(_mm256_broadcast_ss(&d), _mm256_cvtepi32_ps(sumi), acc);
+    }
+
+    // llama.cpp `hsum_float_8`: high128+low128 → movehl add → movehdup add_ss
+    let mut res = _mm256_extractf128_ps::<1>(acc);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(acc));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    _mm_cvtss_f32(res)
+}
+
+fn vec_dot_q6_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
     debug_assert_eq!(w.len(), y.len() * Q6_K_BYTES);
     // llama.cpp generic Q6_K: 8 int32 lanes, float acc per lane, then sum.
     let mut sums = [0.0f32; 8];
@@ -764,6 +907,65 @@ mod tests {
         assert!(
             cos > 0.99,
             "Q8_K matmul drifted from dequant-f32: cos={cos} max_abs={maxd}"
+        );
+    }
+
+    #[test]
+    fn q6k_column0_matches_dequant_and_vec_dot_tracks_f32() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let gguf_path = root.join("harness/vendor/models/nomic-embed-text-v1.5.Q4_K_M.gguf");
+        if !gguf_path.exists() {
+            return;
+        }
+        let gguf = crate::gguf::GgufFile::open(&gguf_path).unwrap();
+        let info = gguf
+            .tensors
+            .iter()
+            .find(|t| t.tensor_type == TensorType::Q6K)
+            .expect("Q4_K_M mix includes Q6_K");
+        let name = info.name.clone();
+        let n_in = info.dimensions[0] as usize;
+        let n_out = info.dimensions[1] as usize;
+        let bytes = gguf.tensor_bytes(info).unwrap();
+        let f32w = gguf.dequantize_tensor(&name).unwrap();
+        let cb = col_bytes(TensorType::Q6K, n_in);
+        let col0 = &bytes[0..cb];
+        let deq = crate::dequant::dequantize(TensorType::Q6K, col0, n_in, "col0").unwrap();
+        let mut max_abs = 0.0f32;
+        for i in 0..n_in {
+            max_abs = max_abs.max((deq[i] - f32w[i]).abs());
+        }
+        assert!(
+            max_abs < 1e-6,
+            "Q6_K {name} column-0 layout max_abs={max_abs}"
+        );
+
+        let x: Vec<f32> = (0..n_in).map(|i| ((i * 17) % 50) as f32 / 25.0 - 1.0).collect();
+        let mut y_q = vec![0.0f32; n_out];
+        let mut y_f = vec![0.0f32; n_out];
+        let w = QuantMat::new(TensorType::Q6K, bytes.to_vec(), f32w, n_in, n_out);
+        std::env::set_var("MILTON_Q8K", "1");
+        matmul_ggml(&x, &w, 1, &mut y_q);
+        std::env::set_var("MILTON_Q8K", "0");
+        matmul_ggml(&x, &w, 1, &mut y_f);
+        let mut dot = 0.0f64;
+        let mut nq = 0.0f64;
+        let mut nf = 0.0f64;
+        let mut maxd = 0.0f32;
+        for i in 0..n_out {
+            dot += f64::from(y_q[i]) * f64::from(y_f[i]);
+            nq += f64::from(y_q[i]) * f64::from(y_q[i]);
+            nf += f64::from(y_f[i]) * f64::from(y_f[i]);
+            maxd = maxd.max((y_q[i] - y_f[i]).abs());
+        }
+        let cos = dot / (nq.sqrt() * nf.sqrt());
+        eprintln!(
+            "q6k {name} vs f32 matmul cos={cos} max_abs={maxd} y_q0={} y_f0={}",
+            y_q[0], y_f[0]
+        );
+        assert!(
+            cos > 0.99,
+            "Q6_K AVX2 matmul drifted from dequant-f32: cos={cos} max_abs={maxd}"
         );
     }
 
