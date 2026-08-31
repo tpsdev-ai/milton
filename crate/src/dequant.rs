@@ -101,7 +101,7 @@ fn dequantize_q8_0(bytes: &[u8], n_elements: usize, name: &str) -> Result<Vec<f3
 
 /// llama.cpp `get_scale_min_k4` — 6-bit packed scales/mins in 12 bytes.
 #[inline]
-fn get_scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
+pub(crate) fn get_scale_min_k4(j: usize, q: &[u8]) -> (u8, u8) {
     if j < 4 {
         (q[j] & 63, q[j + 4] & 63)
     } else {

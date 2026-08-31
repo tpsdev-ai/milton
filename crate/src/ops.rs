@@ -102,6 +102,34 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
     }
 }
 
+/// GPT-J / NORM RoPE: consecutive pairs (x[2i], x[2i+1]). Probe only.
+pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_dim: usize, freq_base: f32) {
+    debug_assert_eq!(x.len(), n_tokens * n_heads * head_dim);
+    debug_assert!(head_dim % 2 == 0);
+    let half = head_dim / 2;
+    let theta_scale = freq_base.powf(-2.0 / head_dim as f32);
+    let mut cache = vec![0.0f32; head_dim];
+    for t in 0..n_tokens {
+        let mut theta = t as f32;
+        for i in 0..half {
+            cache[2 * i] = theta.cos();
+            cache[2 * i + 1] = theta.sin();
+            theta *= theta_scale;
+        }
+        for h in 0..n_heads {
+            let base = (t * n_heads + h) * head_dim;
+            for i in 0..half {
+                let x0 = x[base + 2 * i];
+                let x1 = x[base + 2 * i + 1];
+                let cos_t = cache[2 * i];
+                let sin_t = cache[2 * i + 1];
+                x[base + 2 * i] = x0 * cos_t - x1 * sin_t;
+                x[base + 2 * i + 1] = x0 * sin_t + x1 * cos_t;
+            }
+        }
+    }
+}
+
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
 pub fn attention(

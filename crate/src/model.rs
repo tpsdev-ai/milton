@@ -10,9 +10,10 @@ use crate::meta::{
     ModelMeta, LLAMA_POOLING_CLS, LLAMA_POOLING_MEAN,
 };
 use crate::ops::{
-    attention, cls_pool, l2_normalize_inplace, layer_norm, matmul, mean_pool, rope_neox_inplace,
-    silu,
+    attention, cls_pool, l2_normalize_inplace, layer_norm, mean_pool, rope_neox_inplace,
+    rope_norm_inplace, silu,
 };
+use crate::qmatmul::matmul_ggml;
 use crate::prefix::{Prefix, PrefixConfig};
 use crate::weights::Weights;
 
@@ -183,7 +184,18 @@ impl Model {
             _ => self.meta.pooling_type.unwrap(),
         };
         match pooling {
-            LLAMA_POOLING_MEAN => mean_pool(&hidden, ids.len(), self.n_embd, &mut pooled),
+            LLAMA_POOLING_MEAN => match forward_variant() {
+                ForwardVariant::PoolNoCls => {
+                    mean_pool_skip(&hidden, ids.len(), self.n_embd, true, false, &mut pooled)
+                }
+                ForwardVariant::PoolNoSep => {
+                    mean_pool_skip(&hidden, ids.len(), self.n_embd, false, true, &mut pooled)
+                }
+                ForwardVariant::PoolNoSpecial => {
+                    mean_pool_skip(&hidden, ids.len(), self.n_embd, true, true, &mut pooled)
+                }
+                _ => mean_pool(&hidden, ids.len(), self.n_embd, &mut pooled),
+            },
             LLAMA_POOLING_CLS => cls_pool(&hidden, self.n_embd, &mut pooled),
             other => {
                 return Err(Error::UnsupportedPooling(format!("pooling_type={other}")));
@@ -216,10 +228,12 @@ impl Model {
             let src = &self.weights.token_embd[id * n_embd..(id + 1) * n_embd];
             x[t * n_embd..(t + 1) * n_embd].copy_from_slice(src);
             if let Some(ref types) = self.weights.token_types {
-                // llama.cpp hardcodes type 0 ("Sentence A")
-                let row = &types[0..n_embd];
-                for i in 0..n_embd {
-                    x[t * n_embd + i] += row[i];
+                if !matches!(forward_variant(), ForwardVariant::NoType) {
+                    // llama.cpp hardcodes type 0 ("Sentence A")
+                    let row = &types[0..n_embd];
+                    for i in 0..n_embd {
+                        x[t * n_embd + i] += row[i];
+                    }
                 }
             }
         }
@@ -253,8 +267,10 @@ impl Model {
 
         let _ = (self.n_rot, self.causal, self.n_layer);
 
+        let variant = forward_variant();
+
         for layer in &self.weights.layers {
-            matmul(&x, &layer.attn_qkv, n_tok, n_embd, 3 * n_embd, &mut qkv);
+            matmul_ggml(&x, &layer.attn_qkv, n_tok, &mut qkv);
             if let Some(ref b) = layer.attn_qkv_bias {
                 for t in 0..n_tok {
                     for i in 0..3 * n_embd {
@@ -262,16 +278,20 @@ impl Model {
                     }
                 }
             }
-            for t in 0..n_tok {
-                let src = &qkv[t * 3 * n_embd..(t + 1) * 3 * n_embd];
-                q[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[0..n_embd]);
-                k[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[n_embd..2 * n_embd]);
-                v[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[2 * n_embd..3 * n_embd]);
+            split_qkv(&qkv, &mut q, &mut k, &mut v, n_tok, n_embd, self.n_head, self.head_dim, variant);
+            match variant {
+                ForwardVariant::NoRope => {}
+                ForwardVariant::RopeNorm => {
+                    rope_norm_inplace(&mut q, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
+                    rope_norm_inplace(&mut k, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
+                }
+                _ => {
+                    rope_neox_inplace(&mut q, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
+                    rope_neox_inplace(&mut k, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
+                }
             }
-            rope_neox_inplace(&mut q, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
-            rope_neox_inplace(&mut k, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
             attention(&q, &k, &v, n_tok, self.n_head, self.head_dim, &mut attn_out);
-            matmul(&attn_out, &layer.attn_output, n_tok, n_embd, n_embd, &mut proj);
+            matmul_ggml(&attn_out, &layer.attn_output, n_tok, &mut proj);
             if let Some(ref b) = layer.attn_output_bias {
                 for t in 0..n_tok {
                     for i in 0..n_embd {
@@ -295,10 +315,15 @@ impl Model {
 
             match &layer.ffn_gate {
                 Some(gate_w) => {
-                    matmul(&x, &layer.ffn_up, n_tok, n_embd, self.n_ff, &mut ffn_up);
-                    matmul(&x, gate_w, n_tok, n_embd, self.n_ff, &mut ffn_gate);
+                    matmul_ggml(&x, &layer.ffn_up, n_tok, &mut ffn_up);
+                    matmul_ggml(&x, gate_w, n_tok, &mut ffn_gate);
+                    let swap = matches!(variant, ForwardVariant::SwapSwiglu);
                     for i in 0..ffn_hid.len() {
-                        ffn_hid[i] = ffn_up[i] * silu(ffn_gate[i]);
+                        ffn_hid[i] = if swap {
+                            ffn_gate[i] * silu(ffn_up[i])
+                        } else {
+                            ffn_up[i] * silu(ffn_gate[i])
+                        };
                     }
                 }
                 None => {
@@ -308,7 +333,7 @@ impl Model {
                     ));
                 }
             }
-            matmul(&ffn_hid, &layer.ffn_down, n_tok, self.n_ff, n_embd, &mut ffn_down);
+            matmul_ggml(&ffn_hid, &layer.ffn_down, n_tok, &mut ffn_down);
             for t in 0..n_tok {
                 for i in 0..n_embd {
                     ffn_down[t * n_embd + i] += x[t * n_embd + i];
@@ -330,4 +355,91 @@ impl Model {
 /// Convenience: load + embed. Prefix is the kind (`document` | `query` | `none`).
 pub fn embed(model: &Model, text: &str, prefix: Prefix) -> Result<Vec<f32>> {
     model.embed(text, prefix)
+}
+
+/// Probe-only graph knobs. Default is the llama.cpp nomic-bert graph.
+/// Set `MILTON_VARIANT` to A/B a residual. Not a production fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardVariant {
+    Baseline,
+    NoType,
+    SwapSwiglu,
+    RopeNorm,
+    NoRope,
+    PoolNoCls,
+    PoolNoSep,
+    PoolNoSpecial,
+    QkvInterleaved,
+}
+
+fn forward_variant() -> ForwardVariant {
+    match std::env::var("MILTON_VARIANT").unwrap_or_default().as_str() {
+        "no_type" => ForwardVariant::NoType,
+        "swap_swiglu" => ForwardVariant::SwapSwiglu,
+        "rope_norm" => ForwardVariant::RopeNorm,
+        "no_rope" => ForwardVariant::NoRope,
+        "pool_no_cls" => ForwardVariant::PoolNoCls,
+        "pool_no_sep" => ForwardVariant::PoolNoSep,
+        "pool_no_special" => ForwardVariant::PoolNoSpecial,
+        "qkv_interleaved" => ForwardVariant::QkvInterleaved,
+        _ => ForwardVariant::Baseline,
+    }
+}
+
+fn split_qkv(
+    qkv: &[f32],
+    q: &mut [f32],
+    k: &mut [f32],
+    v: &mut [f32],
+    n_tok: usize,
+    n_embd: usize,
+    n_head: usize,
+    head_dim: usize,
+    variant: ForwardVariant,
+) {
+    if matches!(variant, ForwardVariant::QkvInterleaved) {
+        // HF bloom-style: [n_heads, 3, head_dim] per token.
+        for t in 0..n_tok {
+            for h in 0..n_head {
+                let src = t * 3 * n_embd + h * 3 * head_dim;
+                let dst = t * n_embd + h * head_dim;
+                q[dst..dst + head_dim].copy_from_slice(&qkv[src..src + head_dim]);
+                k[dst..dst + head_dim].copy_from_slice(&qkv[src + head_dim..src + 2 * head_dim]);
+                v[dst..dst + head_dim].copy_from_slice(&qkv[src + 2 * head_dim..src + 3 * head_dim]);
+            }
+        }
+        return;
+    }
+    for t in 0..n_tok {
+        let src = &qkv[t * 3 * n_embd..(t + 1) * 3 * n_embd];
+        q[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[0..n_embd]);
+        k[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[n_embd..2 * n_embd]);
+        v[t * n_embd..(t + 1) * n_embd].copy_from_slice(&src[2 * n_embd..3 * n_embd]);
+    }
+}
+
+fn mean_pool_skip(
+    x: &[f32],
+    n_tokens: usize,
+    n_embd: usize,
+    skip_first: bool,
+    skip_last: bool,
+    out: &mut [f32],
+) {
+    out.fill(0.0);
+    let start = if skip_first { 1 } else { 0 };
+    let end = if skip_last { n_tokens.saturating_sub(1) } else { n_tokens };
+    if end <= start {
+        return;
+    }
+    for t in start..end {
+        let row = &x[t * n_embd..(t + 1) * n_embd];
+        for i in 0..n_embd {
+            out[i] += row[i];
+        }
+    }
+    let inv = 1.0 / (end - start) as f32;
+    for v in out.iter_mut() {
+        *v *= inv;
+    }
 }

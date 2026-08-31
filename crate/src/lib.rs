@@ -10,6 +10,7 @@ mod prefix;
 mod tokenizer;
 mod vocab;
 mod ops;
+mod qmatmul;
 mod weights;
 mod model;
 

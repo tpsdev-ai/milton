@@ -6,6 +6,7 @@
 use crate::error::{Error, Result};
 use crate::gguf::GgufFile;
 use crate::meta::ModelMeta;
+use crate::qmatmul::QuantMat;
 
 #[derive(Debug, Clone)]
 pub struct LayerNormW {
@@ -15,14 +16,14 @@ pub struct LayerNormW {
 
 #[derive(Debug, Clone)]
 pub struct LayerWeights {
-    pub attn_qkv: Vec<f32>,
+    pub attn_qkv: QuantMat,
     pub attn_qkv_bias: Option<Vec<f32>>,
-    pub attn_output: Vec<f32>,
+    pub attn_output: QuantMat,
     pub attn_output_bias: Option<Vec<f32>>,
     pub attn_output_norm: LayerNormW,
-    pub ffn_up: Vec<f32>,
-    pub ffn_gate: Option<Vec<f32>>,
-    pub ffn_down: Vec<f32>,
+    pub ffn_up: QuantMat,
+    pub ffn_gate: Option<QuantMat>,
+    pub ffn_down: QuantMat,
     pub layer_output_norm: LayerNormW,
 }
 
@@ -106,28 +107,25 @@ fn load_layer(gguf: &GgufFile, i: usize, n_embd: usize, n_ff: usize) -> Result<L
     let gate = format!("blk.{i}.ffn_gate.weight");
     let down = format!("blk.{i}.ffn_down.weight");
 
-    let attn_qkv = gguf.dequantize_tensor(&qkv)?;
-    expect_len(&qkv, attn_qkv.len(), n_embd * 3 * n_embd)?;
+    let attn_qkv = load_mat(gguf, &qkv, n_embd, 3 * n_embd)?;
     let attn_qkv_bias = optional_tensor(gguf, &qkv_b)?;
     if let Some(ref b) = attn_qkv_bias {
         expect_len(&qkv_b, b.len(), 3 * n_embd)?;
     }
 
-    let attn_output = gguf.dequantize_tensor(&wo)?;
-    expect_len(&wo, attn_output.len(), n_embd * n_embd)?;
+    let attn_output = load_mat(gguf, &wo, n_embd, n_embd)?;
     let attn_output_bias = optional_tensor(gguf, &wo_b)?;
     if let Some(ref b) = attn_output_bias {
         expect_len(&wo_b, b.len(), n_embd)?;
     }
 
-    let ffn_up = gguf.dequantize_tensor(&up)?;
-    expect_len(&up, ffn_up.len(), n_embd * n_ff)?;
-    let ffn_gate = optional_tensor(gguf, &gate)?;
-    if let Some(ref g) = ffn_gate {
-        expect_len(&gate, g.len(), n_embd * n_ff)?;
-    }
-    let ffn_down = gguf.dequantize_tensor(&down)?;
-    expect_len(&down, ffn_down.len(), n_embd * n_ff)?;
+    let ffn_up = load_mat(gguf, &up, n_embd, n_ff)?;
+    let ffn_gate = if gguf.tensor(&gate).is_some() {
+        Some(load_mat(gguf, &gate, n_embd, n_ff)?)
+    } else {
+        None
+    };
+    let ffn_down = load_mat(gguf, &down, n_ff, n_embd)?;
 
     Ok(LayerWeights {
         attn_qkv,
@@ -139,6 +137,29 @@ fn load_layer(gguf: &GgufFile, i: usize, n_embd: usize, n_ff: usize) -> Result<L
         ffn_gate,
         ffn_down,
         layer_output_norm: load_norm(gguf, &format!("blk.{i}.layer_output_norm"), n_embd)?,
+    })
+}
+
+fn load_mat(gguf: &GgufFile, name: &str, n_in: usize, n_out: usize) -> Result<QuantMat> {
+    let info = gguf
+        .tensor(name)
+        .ok_or_else(|| Error::MissingTensor(name.to_string()))?;
+    let dims = &info.dimensions;
+    if dims.first().copied() != Some(n_in as u64) || dims.get(1).copied() != Some(n_out as u64) {
+        return Err(Error::InvalidGguf(format!(
+            "tensor {name} dims {:?} expected [{n_in}, {n_out}]",
+            dims
+        )));
+    }
+    let bytes = gguf.tensor_bytes(info)?.to_vec();
+    let f32w = gguf.dequantize_tensor(name)?;
+    expect_len(name, f32w.len(), n_in * n_out)?;
+    Ok(QuantMat {
+        ty: info.tensor_type,
+        bytes,
+        f32: f32w,
+        n_in,
+        n_out,
     })
 }
 
