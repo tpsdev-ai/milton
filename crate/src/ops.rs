@@ -159,6 +159,14 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// expected PASS cos_dist≈0 max_abs=7.86e-8; got cos_dist=0.03114
 /// max_abs=0.03411 d0 0.00697820 vs 0.02447182. Keep serial Q@K.
 /// Do not land `2d36deb`. Do not dispatch AVX2 `ggml_vec_dot_f32`.
+///
+/// Oracle (pin.json `llama-embedding`, empty-none, n_tokens=2, AVX2+FMA):
+/// golden == pin llama (max_abs=6.4e-9) == eval-callback
+/// `result_embd_pooled`+L2 (5.3e-8) == Milton serial (7.9e-8).
+/// Dump-exact kq Milton is **not** that oracle (cos_dist=0.031).
+/// Do not switch oracles. First live leftover after Q/K is `kq-0`;
+/// isolated softmax/V-mix on dump inputs are 3e-8 / 2e-7 — not landable
+/// without the forbidden kq tree. `ffn_out-1` (1.14e-5) is kq-contaminated.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
