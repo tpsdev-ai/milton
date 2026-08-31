@@ -10,13 +10,13 @@ Flair's memory is only as good as its embeddings, and today they come through a 
 
 ## The non-negotiable: correctness is a gate, not a hope
 
-Milton is **evidence-gated**. Its output is defined as correct only when it matches a pinned reference implementation (nomic-embed-text-v1.5 via llama.cpp) within epsilon, over a conformance corpus — token-for-token discipline applied to vectors. An implementation that produces plausible-but-wrong vectors is the worst failure a memory layer can have: silent recall collapse, no error, nobody notices for weeks. So Milton **fails closed on any unverified path** — an embedding that hasn't cleared the golden-vector gate does not ship. (Reference discipline modeled on [camelid](https://github.com/timtoole02/Camelid).)
+Milton is **evidence-gated**. Its output is defined as correct only when it matches a pinned reference implementation (nomic-embed-text-v1.5 via llama.cpp — the v1 oracle) within epsilon, over a conformance corpus — token-for-token discipline applied to vectors. An implementation that produces plausible-but-wrong vectors is the worst failure a memory layer can have: silent recall collapse, no error, nobody notices for weeks. So Milton **fails closed on any unverified path** — an embedding that hasn't cleared the golden-vector gate does not ship. (Reference discipline modeled on [camelid](https://github.com/timtoole02/Camelid).)
 
 ## Scope (v1)
 
-- **One model family:** nomic-embed-text-v1.5, mean-pooled, with the nomic search/document prefix convention Flair uses.
+- **GGUF-driven, nomic verified-first.** Dequant and forward read architecture from the file — layer count, dims, pooling, normalization. We ship nomic-embed-text-v1.5 for v1 because Flair uses it today; that file is the golden-vector oracle, not a hardwired product. Prefix convention (`search_query:` / `search_document:`) is config, not code. BERT-family (bge / gte / e5 / nomic-v2) is the same shape parameterized by the GGUF. Model #2 is pin goldens + prefix config + any GGUF-flagged arch variant (CLS vs mean), not a rewrite.
 - **In-process, Node.** No separate server, no OpenAI-compatible HTTP hop — a library you call.
-- New model architectures are bounded, evidence-gated later work — not v1.
+- **Next file, not a rewrite.** A second BERT-family GGUF is goldens + prefix config + whatever pooling the file flags. No model registry.
 
 ## Status
 

@@ -29,16 +29,22 @@ Milton's WASM output must match reference vectors within epsilon (see HARNESS-SP
 
 ```
 src/            TS glue: public API (embed(text, {prefix}) -> Float32Array), wasm loader
-crate/          Rust: GGUF load + dequant + forward pass + mean pool  → compiled to wasm/
+crate/          Rust: GGUF load + dequant + forward (arch from the file)  → compiled to wasm/
 wasm/           the prebuilt .wasm (SIMD), committed or built in CI, NOT compiled at user install
 harness/        the reference oracle (llama.cpp) + gate — NOT shipped in the package
 ```
 
-- **Tokenizer:** nomic uses a BERT-style WordPiece tokenizer. A small pure-Rust (→wasm)
-  or tiny TS implementation — cheap relative to the matmuls. Must reproduce Flair's
-  `search_query:` / `search_document:` prefix handling exactly.
-- **Pooling:** mean (nomic-v1.5's actual pooling — confirm against the GGUF metadata, do
-  not assume).
+- **Architecture from the file:** dequant + forward read layer count, dims, pooling,
+  and normalization from the GGUF. nomic-embed-text-v1.5 is the v1 verified path
+  (Flair's model today). BERT-family files (bge / gte / e5 / nomic-v2) are the same
+  shape parameterized by that metadata. Model #2 is pin goldens + prefix config +
+  any GGUF-flagged variant (CLS vs mean) — not a rewrite. No model registry.
+- **Tokenizer:** BERT-style WordPiece, from the GGUF's tokenizer data. A small
+  pure-Rust (→wasm) or tiny TS implementation — cheap relative to the matmuls.
+- **Prefix:** config, not code. v1's config is Flair's `search_query:` /
+  `search_document:` convention so the golden-vector gate stays honest.
+- **Pooling:** whatever the GGUF flags (mean for nomic-v1.5; CLS when the file
+  says CLS). Do not assume.
 
 ### Honest scope
 
