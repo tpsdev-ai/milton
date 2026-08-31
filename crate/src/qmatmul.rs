@@ -2,9 +2,11 @@
 //!
 //! Goldens were produced by llama-embedding on Q4_K_M weights with
 //! `CPU_REPACK` (AVX2 `q4_K_8x8`). That path quantizes activations to Q8_K.
-//! Q5_K / Q6_K use generic `vec_dot_q*_K_q8_K`. Q4_K uses
-//! `make_block_q4_Kx8` + `ggml_gemv_q4_K_8x8_q8_K` (same integer math as
-//! the generic 8x8 kernel; per-superblock float accum matches AVX2).
+//! Q4_K uses `make_block_q4_Kx8` + `ggml_gemv_q4_K_8x8_q8_K`.
+//! Q5_K uses AVX2 `ggml_vec_dot_q5_K_q8_K` (`quants.c`) when AVX2+FMA is
+//! present — generic `vec_dot` is a different numeric path and seeds a
+//! ~2e-6 residual that later Q8_K `nearest_int` flips compound. Q6_K
+//! stays on generic 8-lane `vec_dot` until Q5_K is bit-exact.
 //! Matching the gate (1e-5 max_abs) requires this path, not dequant-to-f32.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
@@ -172,6 +174,147 @@ fn unpack_scale_min_k4(scales12: &[u8]) -> ([u8; 8], [u8; 8]) {
 }
 
 fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { vec_dot_q5_k_q8_k_avx2(w, y) };
+        }
+    }
+    vec_dot_q5_k_q8_k_generic(w, y)
+}
+
+/// llama.cpp `ggml_vec_dot_q5_K_q8_K` AVX2 (`quants.c` ~1919).
+///
+/// Bit-exact: `maddubs` + `madd_epi16`, `_mm256_fmadd_ps` of `cvtepi32_ps(sumi)`
+/// with broadcast `d` into an 8-wide `acc` across superblocks, mins via
+/// `hadd`/`madd` into scalar `summs`, `hsum_float_8` pairwise order.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn vec_dot_q5_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
+    use std::arch::x86_64::*;
+
+    debug_assert_eq!(w.len(), y.len() * Q5_K_BYTES);
+
+    // llama.cpp `get_scale_shuffle_k4` — 8×32-byte rows, each row broadcasts
+    // one u16 scale across the ymm (`_mm256_shuffle_epi8` is two 128-bit shuffles).
+    #[rustfmt::skip]
+    const K_SHUFFLE: [u8; 256] = [
+        0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+        2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
+        4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5,
+        6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7,
+        8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9,
+        10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,
+        12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,
+        14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,
+    ];
+
+    const KMASK1: u32 = 0x3f3f3f3f;
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+
+    let m4 = _mm256_set1_epi8(0x0F);
+    let mzero = _mm_setzero_si128();
+    let mone = _mm256_set1_epi8(1);
+
+    let mut acc = _mm256_setzero_ps();
+    let mut summs = 0.0f32;
+
+    for (i, yb) in y.iter().enumerate() {
+        let block = &w[i * Q5_K_BYTES..(i + 1) * Q5_K_BYTES];
+        let d = yb.d * f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+        let dmin = -yb.d * f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
+
+        let mut utmp = [0u32; 4];
+        utmp[0] = u32::from_le_bytes(block[4..8].try_into().unwrap());
+        utmp[1] = u32::from_le_bytes(block[8..12].try_into().unwrap());
+        utmp[2] = u32::from_le_bytes(block[12..16].try_into().unwrap());
+        utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+        let uaux = utmp[1] & KMASK1;
+        utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+        utmp[2] = uaux;
+        utmp[0] &= KMASK1;
+
+        let mins_and_scales = _mm256_cvtepu8_epi16(_mm_set_epi32(
+            utmp[3] as i32,
+            utmp[2] as i32,
+            utmp[1] as i32,
+            utmp[0] as i32,
+        ));
+
+        let q8sums = _mm256_loadu_si256(yb.bsums.as_ptr().cast());
+        let q8s = _mm_hadd_epi16(
+            _mm256_extracti128_si256::<0>(q8sums),
+            _mm256_extracti128_si256::<1>(q8sums),
+        );
+        let prod = _mm_madd_epi16(_mm256_extracti128_si256::<1>(mins_and_scales), q8s);
+        let hsum = _mm_hadd_epi32(_mm_hadd_epi32(prod, mzero), mzero);
+        summs += dmin * (_mm_extract_epi32::<0>(hsum) as f32);
+
+        let sc128 = _mm256_extracti128_si256::<0>(mins_and_scales);
+        // MM256_SET_M128I(sc128, sc128)
+        let scales = _mm256_insertf128_si256::<1>(_mm256_castsi128_si256(sc128), sc128);
+
+        let hbits = _mm256_loadu_si256(block[16..48].as_ptr().cast());
+        let mut hmask = mone;
+        let mut sumi = _mm256_setzero_si256();
+        let mut bit = 0i32;
+        let q5 = block[48..176].as_ptr();
+        let q8 = yb.qs.as_ptr();
+
+        for j in 0..QK_K / 64 {
+            let scale_0 = _mm256_shuffle_epi8(
+                scales,
+                _mm256_loadu_si256(K_SHUFFLE.as_ptr().add((2 * j) * 32).cast()),
+            );
+            let scale_1 = _mm256_shuffle_epi8(
+                scales,
+                _mm256_loadu_si256(K_SHUFFLE.as_ptr().add((2 * j + 1) * 32).cast()),
+            );
+
+            let q5bits = _mm256_loadu_si256(q5.add(j * 32).cast());
+
+            let q5l_0 = _mm256_and_si256(q5bits, m4);
+            let q5h_0 = _mm256_slli_epi16::<4>(_mm256_srl_epi16(
+                _mm256_and_si256(hbits, hmask),
+                _mm_cvtsi32_si128(bit),
+            ));
+            bit += 1;
+            let q5_0 = _mm256_add_epi8(q5l_0, q5h_0);
+            hmask = _mm256_slli_epi16::<1>(hmask);
+
+            let q5l_1 = _mm256_and_si256(_mm256_srli_epi16::<4>(q5bits), m4);
+            let q5h_1 = _mm256_slli_epi16::<4>(_mm256_srl_epi16(
+                _mm256_and_si256(hbits, hmask),
+                _mm_cvtsi32_si128(bit),
+            ));
+            bit += 1;
+            let q5_1 = _mm256_add_epi8(q5l_1, q5h_1);
+            hmask = _mm256_slli_epi16::<1>(hmask);
+
+            let q8_0 = _mm256_loadu_si256(q8.add(j * 64).cast());
+            let q8_1 = _mm256_loadu_si256(q8.add(j * 64 + 32).cast());
+
+            let mut p16_0 = _mm256_maddubs_epi16(q5_0, q8_0);
+            let mut p16_1 = _mm256_maddubs_epi16(q5_1, q8_1);
+            p16_0 = _mm256_madd_epi16(scale_0, p16_0);
+            p16_1 = _mm256_madd_epi16(scale_1, p16_1);
+            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p16_0, p16_1));
+        }
+
+        let vd = _mm256_set1_ps(d);
+        acc = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);
+    }
+
+    // llama.cpp `hsum_float_8`: high128+low128 → movehl add → movehdup add_ss
+    let mut res = _mm256_extractf128_ps::<1>(acc);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(acc));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    _mm_cvtss_f32(res) + summs
+}
+
+fn vec_dot_q5_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
     debug_assert_eq!(w.len(), y.len() * Q5_K_BYTES);
     // llama.cpp generic: 8 int32 lanes, `sums[l] += d * aux32[l]` per superblock.
     let mut sums = [0.0f32; 8];
