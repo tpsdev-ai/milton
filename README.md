@@ -20,12 +20,14 @@ Milton is **evidence-gated**. Its output is defined as correct only when it matc
 
 ## Status
 
-Phase 1 (issue #1): the conformance + bench harness lives in `harness/`. There is no embedder yet — `src/` refuses. See `harness/README.md` and `docs/HARNESS-SPEC.md`.
+Phase 1 (issue #1): the conformance + bench harness lives in `harness/`.
+Tokenizer slice (issue #3): pure Rust nomic WordPiece + Flair prefixes in `crate/`. There is no embedder yet — `src/` refuses. See `harness/README.md` and `docs/HARNESS-SPEC.md`.
 
 ## Layout (planned)
 
 ```
 harness/   the golden-vector conformance + footprint/throughput bench (built first)
-src/       the embedder (tokenizer + forward pass)
+crate/     Rust tokenizer (this slice); GGUF + forward later
+src/       TS glue (embedder not implemented — refuses)
 docs/      HARNESS-SPEC.md, architecture, receipts
 ```
