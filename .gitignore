@@ -2,17 +2,7 @@ node_modules/
 .env
 *.log
 .DS_Store
-
-# Reference oracle artifacts — never ship, never commit
 harness/vendor/
-harness/.cache/
-*.gguf
-*.node
-
-# Generated locally; goldens/ and epsilon.json ARE committed
-harness/receipts/*.json
-!harness/receipts/.gitkeep
-
-# Rust build (crate/ compiles to WASM later — not at npm install)
-crate/target/
+harness/models/
 target/
+crate/target/

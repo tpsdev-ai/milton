@@ -57,6 +57,14 @@ MILTON_GATE_EMBEDDER=reference npm run harness:gate   # live llama.cpp vs golden
 
 `EPSILON` / `EPSILON_ABS` are **derived** from the reference's own run-to-run delta (`goldens/epsilon.json`). Do not loosen them to pass.
 
+Dequant (issue #4) has its own fixture + gate, still llama.cpp-oracled, not a second embedder:
+
+```sh
+npm run dequant:goldens     # llama.cpp ggml to_float → goldens/dequant.json
+npm run dequant:gate        # Milton vs fixture (N tensors, max/mean abs)
+npm run dequant:must-fail   # wrong block scale / wrong type must go RED
+```
+
 ## Must-fail control
 
 `npm test` / `npm run harness:must-fail` ships four wrong embedders. Each must turn the run RED and name the failure before the gate is trusted:
