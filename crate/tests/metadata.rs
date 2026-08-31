@@ -25,6 +25,10 @@ fn nomic_metadata_matches_the_file() {
     assert_eq!(meta.context_length, 2048);
     assert_eq!(meta.pooling_type, Some(1));
     assert_eq!(meta.pooling.as_deref(), Some("mean"));
+    assert_eq!(meta.rope_freq_base, Some(1000.0));
+    assert_eq!(meta.causal_attn, Some(false));
+    assert_eq!(meta.feed_forward_length, Some(3072));
+    assert_eq!(meta.attention_head_count, Some(12));
     assert_eq!(
         meta.pooling_key.as_deref(),
         Some("nomic-bert.pooling_type")

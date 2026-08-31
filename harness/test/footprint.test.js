@@ -32,9 +32,9 @@ describe("light by construction", () => {
     assert.deepEqual(native, []);
   });
 
-  it("src/ does not implement an embedder in this PR", () => {
+  it("src/ is glue only — no heavy native runtime, no compiled binaries", () => {
     const src = readFileSync(join(SRC, "index.js"), "utf8");
-    assert.match(src, /not implemented yet/);
-    assert.doesNotMatch(src, /llama\.cpp|onnxruntime|gguf|matmul/i);
+    assert.match(src, /embed\(text, prefix\)/);
+    assert.doesNotMatch(src, /onnxruntime|llama\.cpp/i);
   });
 });

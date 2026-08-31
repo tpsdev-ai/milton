@@ -21,13 +21,17 @@ Milton is **evidence-gated**. Its output is defined as correct only when it matc
 ## Status
 
 Phase 1 (issue #1): the conformance + bench harness lives in `harness/`.
-Tokenizer slice (issue #3): pure Rust nomic WordPiece + Flair prefixes in `crate/`. There is no embedder yet — `src/` refuses. See `harness/README.md` and `docs/HARNESS-SPEC.md`.
+Tokenizer slice (issue #3): pure Rust nomic WordPiece + Flair prefixes in `crate/`.
+GGUF load + dequant (issue #4): in `crate/`.
+Forward pass (issue #5): native Rust nomic-bert — embeddings → layers → mean-pool → L2.
+`embed(text, prefix) -> Float32Array` in `src/` shells to the native bin (WASM packaging is issue #6).
+See `harness/README.md` and `docs/HARNESS-SPEC.md`.
 
-## Layout (planned)
+## Layout
 
 ```
-harness/   the golden-vector conformance + footprint/throughput bench (built first)
-crate/     Rust tokenizer (this slice); GGUF + forward later
-src/       TS glue (embedder not implemented — refuses)
+harness/   the golden-vector conformance + footprint/throughput bench
+crate/     Rust tokenizer + GGUF dequant + native forward
+src/       TS glue: embed(text, prefix) -> Float32Array
 docs/      HARNESS-SPEC.md, architecture, receipts
 ```

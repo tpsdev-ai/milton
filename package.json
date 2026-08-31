@@ -26,7 +26,10 @@
     "dequant:goldens": "node harness/scripts/generate-dequant-goldens.mjs",
     "dequant:gate": "cargo run --manifest-path crate/Cargo.toml --quiet --bin dequant-gate",
     "dequant:must-fail": "cargo run --manifest-path crate/Cargo.toml --quiet --bin dequant-must-fail",
-    "dequant:test": "cargo test --manifest-path crate/Cargo.toml"
+    "dequant:test": "cargo test --manifest-path crate/Cargo.toml",
+    "embed:gate": "cargo run --manifest-path crate/Cargo.toml --release --bin embed-gate",
+    "embed:must-fail": "cargo run --manifest-path crate/Cargo.toml --release --bin embed-must-fail",
+    "embed:js-gate": "MILTON_GATE_EMBEDDER=milton node harness/scripts/run-gate.mjs --milton"
   },
   "engines": {
     "node": ">=22"

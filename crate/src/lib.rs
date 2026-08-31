@@ -1,14 +1,17 @@
-//! Milton crate — tokenizer + GGUF dequant for nomic-embed-text-v1.5.
-//! Forward / mean-pool / L2 and WASM packaging are later slices.
+//! Milton crate — tokenizer + GGUF dequant + native forward for nomic-embed-text-v1.5.
+//! WASM packaging is a later slice.
 //!
 //! Tokenizer core (`tokenize`, `apply_prefix`) is pure. Vocab is embedded
-//! from the pinned `vocab.txt`. Dequant correctness is defined against
-//! llama.cpp of the pinned GGUF (`harness/goldens/pin.json`). camelid
-//! patterns are mirrored, not vendored. An unverified path refuses.
+//! from the pinned `vocab.txt`. Forward is GGUF-driven (layer count, dims,
+//! pooling, RoPE, LN eps). Prefixes are config. Dequant + forward correctness
+//! is defined against llama.cpp of the pinned GGUF. An unverified path refuses.
 
 mod prefix;
 mod tokenizer;
 mod vocab;
+mod ops;
+mod weights;
+mod model;
 
 #[cfg(test)]
 mod conformance;
@@ -18,8 +21,9 @@ pub mod error;
 pub mod gguf;
 pub mod meta;
 
-pub use prefix::{apply_prefix, Prefix, PrefixError};
+pub use prefix::{apply_prefix, Prefix, PrefixConfig, PrefixError};
 pub use tokenizer::{tokenize, tokenize_kind, tokenize_prefixed, TokenizeError};
+pub use model::{embed, EmbedConfig, ForwardFault, Model};
 
 pub use dequant::{dequantize, dequantize_wrong_block_scale, dequantize_wrong_type, f16_to_f32};
 pub use error::{Error, Result};

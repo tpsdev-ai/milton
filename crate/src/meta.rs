@@ -27,6 +27,14 @@ pub struct ModelMeta {
     pub feed_forward_length: Option<u64>,
     pub attention_head_count: Option<u64>,
     pub layer_norm_epsilon: Option<f64>,
+    /// Raw `{arch}.rope.freq_base` as stored in the GGUF, if present.
+    pub rope_freq_base: Option<f64>,
+    /// Raw `{arch}.rope.dimension_count` as stored, if present.
+    pub rope_dimension_count: Option<u64>,
+    /// Raw `{arch}.attention.causal` as stored, if present.
+    pub causal_attn: Option<bool>,
+    /// `tokenizer.ggml.token_type_count` as stored, if present.
+    pub token_type_count: Option<u64>,
     /// Raw `*.pooling_type` integer as stored in the GGUF, if present.
     pub pooling_type: Option<i64>,
     /// Human label derived from `pooling_type` only (1 → "mean"). Never assumed.
@@ -67,6 +75,19 @@ impl ModelMeta {
             .map(|v| v as u64);
         let layer_norm_epsilon = gguf.metadata_f64(&format!("{prefix}.attention.layer_norm_epsilon"))
             .or_else(|| gguf.metadata_f64(&format!("{prefix}.layer_norm_epsilon")));
+        let rope_freq_base = gguf.metadata_f64(&format!("{prefix}.rope.freq_base"));
+        let rope_dimension_count = gguf
+            .metadata_i64(&format!("{prefix}.rope.dimension_count"))
+            .map(|v| v as u64);
+        let causal_attn = gguf.metadata.get(&format!("{prefix}.attention.causal")).and_then(|v| {
+            match v {
+                MetadataValue::Bool(b) => Some(*b),
+                other => other.as_i64().map(|i| i != 0),
+            }
+        });
+        let token_type_count = gguf
+            .metadata_i64("tokenizer.ggml.token_type_count")
+            .map(|v| v as u64);
 
         let pooling_key = format!("{prefix}.pooling_type");
         let pooling_type = gguf.metadata_i64(&pooling_key);
@@ -91,6 +112,10 @@ impl ModelMeta {
             feed_forward_length,
             attention_head_count,
             layer_norm_epsilon,
+            rope_freq_base,
+            rope_dimension_count,
+            causal_attn,
+            token_type_count,
             pooling_type,
             pooling,
             pooling_key,
