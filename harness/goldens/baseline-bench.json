@@ -1,0 +1,36 @@
+{
+  "schema": "milton.bench-baseline/1",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.14.0",
+    "cpus": 4
+  },
+  "intended_path": "Harper models.embed / harper-fabric-embeddings → llama.cpp",
+  "measured": "harper-fabric-embeddings@0.5.0 raw API (same engine Flair registers as models.embed). Harper process facade was not booted in this environment.",
+  "status": "ok",
+  "cold_start_ms": 87.64659999999999,
+  "dims": 768,
+  "single": {
+    "n": 8,
+    "ms": 126.794027,
+    "embeddings_per_sec": 63.09445475692636
+  },
+  "batched": {
+    "n": 18,
+    "ms": 1075.053322,
+    "embeddings_per_sec": 16.74335554492617,
+    "note": "HFE embedBatch is sequential on one llama.cpp context; the long-repeated corpus item dominates wall time."
+  },
+  "install_footprint": {
+    "hfe_node_modules_mb": 32,
+    "hfe_version": "0.5.0",
+    "native_addon": "@node-llama-cpp/linux-x64@3.18.1",
+    "milton_src_native_binaries": 0,
+    "milton_npm_pack_bytes": 1860
+  },
+  "harper_models_embed": {
+    "ok": false,
+    "error": "harper package not installed; models.embed requires a running Harper process"
+  }
+}

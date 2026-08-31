@@ -1,0 +1,108 @@
+{
+  "schema": "milton.epsilon/1",
+  "epsilon": 0.000001,
+  "epsilon_abs": 0.00001,
+  "derived_from": {
+    "method": "reference run-to-run: llama-embedding twice, same GGUF, threads=1, pooling=mean, embd-normalize=2",
+    "n": 18,
+    "observed_max_cos_dist": 2.220446049250313e-16,
+    "observed_max_abs": 0,
+    "cos_margin": 10,
+    "abs_margin": 10,
+    "cos_numeric_floor": 0.000001,
+    "abs_numeric_floor": 0.00001,
+    "formula": "epsilon = max(observed_max_cos_dist * 10, 1e-6); epsilon_abs = max(observed_max_abs * 10, 1e-5)",
+    "per_item": [
+      {
+        "id": "short-hello-document",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "short-hello-query",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "short-hello-none",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "unicode-cjk-emoji",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "unicode-nfc",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "unicode-nfd",
+        "cos_dist": 2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "whitespace-padded",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "whitespace-only",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "empty-document",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "empty-none",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "newlines-tabs",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "punctuation-only",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "long-repeated",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "prefix-already-present",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "numeric-ids",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "flair-memory-preference",
+        "cos_dist": 0,
+        "max_abs": 0
+      },
+      {
+        "id": "flair-memory-decision",
+        "cos_dist": -2.220446049250313e-16,
+        "max_abs": 0
+      },
+      {
+        "id": "flair-query-recall",
+        "cos_dist": 0,
+        "max_abs": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+.env
+*.log
+.DS_Store
+
+# Reference oracle artifacts — never ship, never commit
+harness/vendor/
+harness/.cache/
+*.gguf
+*.node
+
+# Generated locally; goldens/ and epsilon.json ARE committed
+harness/receipts/*.json
+!harness/receipts/.gitkeep

@@ -1,0 +1,115 @@
+{
+  "schema": "milton.corpus/1",
+  "model": "nomic-embed-text-v1.5",
+  "notes": "Fixed conformance corpus. Each case is a trap for a specific failure mode. Prefix kinds match Flair embeddings-provider.ts (document = stored Memory.content, query = SemanticSearch q, none = omitted inputType passthrough).",
+  "cases": [
+    {
+      "id": "short-hello-document",
+      "text": "hello",
+      "prefix": "document",
+      "trap": "Short ASCII body. Traps a tokenizer that drops BOS/EOS or special-cases single-token inputs."
+    },
+    {
+      "id": "short-hello-query",
+      "text": "hello",
+      "prefix": "query",
+      "trap": "Same body as short-hello-document with search_query: instead of search_document:. Traps inverted nomic asymmetry (passing the prefix STRING as the inputType VALUE)."
+    },
+    {
+      "id": "short-hello-none",
+      "text": "hello",
+      "prefix": "none",
+      "trap": "Same body unprefixed (Flair omitted-inputType passthrough). Traps a dropped or always-on prefix. Sibling for the drop-prefix must-fail control."
+    },
+    {
+      "id": "unicode-cjk-emoji",
+      "text": "記憶レイヤ — recall must not silently collapse。stapler 📎",
+      "prefix": "document",
+      "trap": "CJK + fullwidth punctuation + emoji. Traps a WordPiece impl that mishandles multibyte codepoints or strips non-ASCII."
+    },
+    {
+      "id": "unicode-nfc",
+      "text": "café résumé naïve",
+      "prefix": "document",
+      "trap": "NFC composed accents. Pair with unicode-nfd: a normalizer that folds NFC↔NFD will collide these; nomic WordPiece does not."
+    },
+    {
+      "id": "unicode-nfd",
+      "text": "cafe\u0301 re\u0301sume\u0301 nai\u0308ve",
+      "prefix": "document",
+      "trap": "NFD decomposed accents of unicode-nfc. Traps unicode-normalize-before-tokenize that Flair/HFE do not apply."
+    },
+    {
+      "id": "whitespace-padded",
+      "text": "  padded both sides  ",
+      "prefix": "document",
+      "trap": "Leading/trailing spaces preserved. Traps trim-before-embed."
+    },
+    {
+      "id": "whitespace-only",
+      "text": " \t\n  ",
+      "prefix": "document",
+      "trap": "Whitespace-only body under search_document:. Traps collapsing whitespace to empty or skipping the embed."
+    },
+    {
+      "id": "empty-document",
+      "text": "",
+      "prefix": "document",
+      "trap": "Empty body, prefixed to 'search_document: '. Traps an embedder that refuses empty input or guesses a zero vector instead of embedding the prefix tokens."
+    },
+    {
+      "id": "empty-none",
+      "text": "",
+      "prefix": "none",
+      "trap": "Empty unprefixed input. Traps a path that invents a vector when llama.cpp has no body tokens (HFE returns a 0-length array on tokenize-empty; the reference records whatever llama-embedding actually emits — fail closed, never guess)."
+    },
+    {
+      "id": "newlines-tabs",
+      "text": "line one\nline two\tindented\r\nline three",
+      "prefix": "document",
+      "trap": "Embedded CR/LF/tab. Traps newline-stripping or whitespace-folding before tokenize."
+    },
+    {
+      "id": "punctuation-only",
+      "text": "???",
+      "prefix": "query",
+      "trap": "Punctuation-only query. Traps a tokenizer that drops all-punctuation inputs."
+    },
+    {
+      "id": "long-repeated",
+      "text": "The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark. The stapler is load-bearing. A plausible-but-wrong vector is silent recall collapse. Evidence is the receipt, not a green checkmark.",
+      "prefix": "document",
+      "trap": "Long body (~2k chars). Traps context/batch truncation off-by-one versus HFE's 2048-token window (nomic max position is 2048)."
+    },
+    {
+      "id": "prefix-already-present",
+      "text": "search_document: already prefixed",
+      "prefix": "document",
+      "trap": "Body that already starts with the document prefix. Traps double-prefixing or a 'detect and skip' heuristic Flair does not have — Flair concatenates unconditionally."
+    },
+    {
+      "id": "numeric-ids",
+      "text": "memory-id: mem_01J8ZX4K2N agentId: flair-milton embeddingModel: nomic-embed-text-v1.5-Q4_K_M+searchprefix",
+      "prefix": "document",
+      "trap": "Underscores, plus-suffix model stamp, hex-ish ids. Traps WordPiece splits on identifiers."
+    },
+    {
+      "id": "flair-memory-preference",
+      "text": "User prefers dark mode in the editor and reviews PRs after 10am. Do not page them on weekends.",
+      "prefix": "document",
+      "trap": "Flair-shaped Memory.content (document-prefixed stored fact). Traps a query-prefix leak onto the write path."
+    },
+    {
+      "id": "flair-memory-decision",
+      "text": "Decision: Milton v1 ships Rust→WASM-SIMD. No native compile at npm install. Evidence-gated against llama.cpp goldens. Do not loosen epsilon to pass.",
+      "prefix": "document",
+      "trap": "Flair-shaped decision memory: arrows, version tokens, hyphenated compounds. Traps punctuation/subword splits that change mean-pool mass."
+    },
+    {
+      "id": "flair-query-recall",
+      "text": "what did we decide about Milton's install footprint?",
+      "prefix": "query",
+      "trap": "Flair-shaped SemanticSearch q (query-prefixed). Traps applying search_document: to a retrieval query."
+    }
+  ]
+}

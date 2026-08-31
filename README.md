@@ -20,7 +20,7 @@ Milton is **evidence-gated**. Its output is defined as correct only when it matc
 
 ## Status
 
-Scaffolding. The build is issue-tracked and proceeds **harness first** — the conformance harness is the correctness oracle, the optimization target, and the agent's iteration signal, all in one artifact. Nothing is "done" until it clears that gate. See the issues and `docs/HARNESS-SPEC.md`.
+Phase 1 (issue #1): the conformance + bench harness lives in `harness/`. There is no embedder yet — `src/` refuses. See `harness/README.md` and `docs/HARNESS-SPEC.md`.
 
 ## Layout (planned)
 

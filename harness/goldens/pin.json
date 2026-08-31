@@ -1,0 +1,27 @@
+{
+  "schema": "milton.pin/1",
+  "generated_at_utc": "2026-08-30T21:48:40.344Z",
+  "model": "nomic-embed-text-v1.5",
+  "gguf_file": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+  "gguf_sha256": "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac",
+  "gguf_source": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF",
+  "pooling": "mean",
+  "embd_normalize": 2,
+  "threads": 1,
+  "ctx": 2048,
+  "batch": 2048,
+  "prefix_convention": {
+    "document": "search_document: {text}",
+    "query": "search_query: {text}",
+    "none": "{text}",
+    "source": "flair resources/embeddings-provider.ts + harper-fabric-embeddings src/engine.ts NOMIC_TEMPLATES"
+  },
+  "llamacpp_commit": "61bdfd5298a78593be649a1035ee2a120b13c4f0",
+  "llamacpp_digest": "2cc7a3ce8319942a89189f716b17298160b46d0cb3c3e242f4516b1223626130",
+  "llamacpp_describe": "b6399",
+  "llamacpp_head_note": {
+    "commit": "61bdfd5298a78593be649a1035ee2a120b13c4f0",
+    "describe": "61bdfd5298a78593be649a1035ee2a120b13c4f0"
+  },
+  "dims": 768
+}
