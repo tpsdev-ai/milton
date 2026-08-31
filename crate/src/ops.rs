@@ -134,58 +134,13 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
     }
 }
 
-/// ggml `ggml_vec_dot_f32` AVX2+FMA path (`vec.cpp` / `simd-mappings.h`):
-/// `GGML_F32_STEP=32`, `EPR=8`, `ARR=4`, four FMA accumulators, then
-/// `GGML_F32x8_REDUCE`. First op that diverges vs llama on
-/// `short-hello-document` / `short-hello-none` is Q@K (`kq`).
-pub fn vec_dot_f32(x: &[f32], y: &[f32]) -> f32 {
-    debug_assert_eq!(x.len(), y.len());
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            return unsafe { vec_dot_f32_avx2(x, y) };
-        }
-    }
-    let mut acc = 0.0f32;
-    for i in 0..x.len() {
-        acc += x[i] * y[i];
-    }
-    acc
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn vec_dot_f32_avx2(x: &[f32], y: &[f32]) -> f32 {
-    use std::arch::x86_64::*;
-    const STEP: usize = 32;
-    const EPR: usize = 8;
-    let n = x.len();
-    let np = n & !(STEP - 1);
-    let mut sum = [_mm256_setzero_ps(); 4];
-    let mut i = 0;
-    while i < np {
-        for j in 0..4 {
-            let ax = _mm256_loadu_ps(x.as_ptr().add(i + j * EPR));
-            let ay = _mm256_loadu_ps(y.as_ptr().add(i + j * EPR));
-            sum[j] = _mm256_fmadd_ps(ax, ay, sum[j]);
-        }
-        i += STEP;
-    }
-    // GGML_F32x8_REDUCE (ARR=4)
-    sum[0] = _mm256_add_ps(sum[0], sum[2]);
-    sum[1] = _mm256_add_ps(sum[1], sum[3]);
-    sum[0] = _mm256_add_ps(sum[0], sum[1]);
-    let t0 = _mm_add_ps(_mm256_castps256_ps128(sum[0]), _mm256_extractf128_ps(sum[0], 1));
-    let t1 = _mm_hadd_ps(t0, t0);
-    let mut acc = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
-    for k in np..n {
-        acc += x[k] * y[k];
-    }
-    acc
-}
-
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
+///
+/// Q@K stays scalar f32. An AVX2 `ggml_vec_dot_f32` port on this path
+/// broke `empty-none` (cos_dist 0 → 0.025) the same way AVX2 SiLU did.
+/// Do not re-enable without an `empty-none` receipt. First gate-breaking
+/// leftover vs llama is Q4_K GEMM vs GEMV (`qmatmul.rs`), not F32 Q@K.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
@@ -230,7 +185,10 @@ pub fn attention_named(
             for tk in 0..n_tokens {
                 let koff = (tk * n_heads + h) * head_dim;
                 let kh = &k[koff..koff + head_dim];
-                let dot = vec_dot_f32(qh, kh);
+                let mut dot = 0.0f32;
+                for i in 0..head_dim {
+                    dot += qh[i] * kh[i];
+                }
                 scores[tk] = dot * scale;
                 if dump {
                     // llama kq is {n_kv, n_q, n_heads} = tk + tq*n + h*n*n
@@ -361,17 +319,5 @@ mod tests {
         softmax_inplace(&mut x);
         let s: f32 = x.iter().sum();
         assert!((s - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn vec_dot_f32_matches_scalar_on_head_dim() {
-        let x: Vec<f32> = (0..64).map(|i| (i as f32) * 0.01 - 0.3).collect();
-        let y: Vec<f32> = (0..64).map(|i| (i as f32) * -0.02 + 0.1).collect();
-        let mut scalar = 0.0f32;
-        for i in 0..64 {
-            scalar += x[i] * y[i];
-        }
-        let got = vec_dot_f32(&x, &y);
-        assert!((got - scalar).abs() < 1e-5, "got={got} scalar={scalar}");
     }
 }
