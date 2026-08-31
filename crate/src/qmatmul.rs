@@ -18,8 +18,16 @@
 //! `ggml_gemm_q4_K_8x8_q8_K` (4x8) on that tile disagrees with the
 //! graph dump (max_abs=3.49e-4); DSO GEMV + row Q8_K matches the dump
 //! (1.5e-7). AVX2 4x8 kernels in `q4k_avx2` stay bit-exact vs the DSO
-//! and are not used on the embed path. Do not invent another quant
-//! type. Do not touch `quantize_row_q8_K` or Q5_K `vec_dot`.
+//! and are not used on the embed path.
+//!
+//! After GEMV-only, the first tensor that is **not bit-exact** vs the
+//! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT) on both
+//! `short-hello-document` (max_abs=1.91e-6, 3489 elems) and
+//! `empty-none` (max_abs=4.77e-7, 616 elems). `inp_embd` ADD and
+//! `inp_norm` are bit-exact. Q@K dispatch is the **same** for n=2 and
+//! n=7 (`tinyBLAS` rejects `m % 4 != 0`; `ggml_vec_dot_f32` n=64).
+//! Do not invent another Q5_K kernel. Do not globally enable AVX2
+//! Q@K (avalanches `empty-none`). Do not touch `quantize_row_q8_K`.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
 use crate::gguf::TensorType;

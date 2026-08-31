@@ -137,17 +137,14 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
 ///
-/// Q@K stays serial f32. Probe vs pinned `libggml-cpu.so` `ggml_vec_dot_f32`
-/// and the eval-callback `kq` dump (`short-hello-document` / `empty-none`):
-/// the AVX2 4-accum FMA + `GGML_F32x8_REDUCE` path is **bit-exact** on
-/// llama's own Q/K (max_abs=0). On Milton Q/K it is the first remaining
-/// diverge (`kq-0` 7.6e-5 unscaled) **and** it avalanches `empty-none`
-/// (cos_dist 0 → 0.02518585, max_abs 0.03100102) — same receipt as
-/// `2d36deb` / AVX2 SiLU. f64 (`ggml_float`) serial also breaks
-/// `empty-none` (0.02621667). Do **not** dispatch AVX2 `vec_dot` or
-/// `_mm_hadd_ps` here without an `empty-none` PASS (cos_dist=0,
-/// max_abs≤1e-5). GEMV-only Q4_K stays; leftover after that port is
-/// this kq residual → Q8_K `nearest_int` at `ffn_out-1` (1.526e-5).
+/// Q@K stays serial f32. First tensor that is not bit-exact vs llama
+/// is `wqkv-0` (Q5_K), not kq: `inp_embd`/`inp_norm` match; then Q/K
+/// already differ (document 1.9e-6 / empty-none 4.8e-7). llama.cpp
+/// dispatches the **same** `ggml_vec_dot_f32` AVX2 kernel for n=2 and
+/// n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot n=head_dim=64). Enabling
+/// that kernel globally avalanches `empty-none` (cos_dist 0 →
+/// 0.02518585). Do not land `2d36deb`. Do not invent a n=7-only AVX2
+/// Q@K split llama does not use.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
