@@ -22,7 +22,11 @@
     "harness:gate": "node harness/scripts/run-gate.mjs",
     "harness:must-fail": "node --test harness/test/must-fail.test.js",
     "harness:bench": "node harness/scripts/bench-flair.mjs",
-    "harness:footprint": "node harness/scripts/bench-footprint.mjs"
+    "harness:footprint": "node harness/scripts/bench-footprint.mjs",
+    "dequant:goldens": "node harness/scripts/generate-dequant-goldens.mjs",
+    "dequant:gate": "cargo run --manifest-path crate/Cargo.toml --quiet --bin dequant-gate",
+    "dequant:must-fail": "cargo run --manifest-path crate/Cargo.toml --quiet --bin dequant-must-fail",
+    "dequant:test": "cargo test --manifest-path crate/Cargo.toml"
   },
   "engines": {
     "node": ">=22"

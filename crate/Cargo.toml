@@ -3,9 +3,10 @@ name = "milton"
 version = "0.0.0"
 edition = "2021"
 license = "UNLICENSED"
-description = "In-process nomic-embed-text-v1.5 embeddings for Flair (tokenizer slice)"
+description = "In-process nomic-embed-text-v1.5 embeddings for Flair (tokenizer + GGUF dequant)"
 publish = false
 repository = "https://github.com/tpsdev-ai/milton"
+rust-version = "1.83"
 
 [lib]
 name = "milton"
@@ -16,14 +17,24 @@ name = "milton-tokenize"
 path = "src/bin/milton-tokenize.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "dequant-gate"
+path = "src/bin/dequant-gate.rs"
+
+[[bin]]
+name = "dequant-must-fail"
+path = "src/bin/dequant-must-fail.rs"
+
 [features]
 default = []
-cli = ["dep:serde_json"]
+# CLI extras for milton-tokenize. serde_json is a regular dep (dequant bins + tokenizer).
+cli = []
 
 [dependencies]
 unicode-general-category = "1.0"
 unicode-normalization = "0.1.24"
-serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

@@ -1,0 +1,17 @@
+{
+  "schema": "milton.dequant.epsilon/1",
+  "epsilon": 0.000001,
+  "epsilon_abs": 0.00001,
+  "derived_from": {
+    "method": "llama.cpp ggml to_float twice on the same GGUF tensor bytes (selected tensors + synth Q8_0/F16); measure max abs-diff",
+    "n_tensors": 6,
+    "n_kernel_blocks": 5,
+    "observed_max_cos_dist": 0,
+    "observed_max_abs": 0,
+    "cos_margin": 10,
+    "abs_margin": 10,
+    "cos_numeric_floor": 0.000001,
+    "abs_numeric_floor": 0.00001,
+    "formula": "epsilon = max(observed_max_cos_dist * 10, 1e-6); epsilon_abs = max(observed_max_abs * 10, 1e-5)"
+  }
+}
