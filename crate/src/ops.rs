@@ -28,10 +28,113 @@ pub fn layer_norm(x: &[f32], weight: &[f32], bias: &[f32], eps: f32, out: &mut [
     }
 }
 
-/// ggml `ggml_silu_f32`: x / (1 + exp(-x)).
+/// ggml `ggml_silu_f32`: x / (1 + exp(-x)). Scalar tail / tests.
 #[inline]
 pub fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
+}
+
+/// llama.cpp `ggml_vec_swiglu_f32`: `up * silu(gate)`.
+/// AVX2+FMA uses `ggml_v_silu` / `ggml_v_expf` (not libm `expf`).
+pub fn swiglu(gate: &[f32], up: &[f32], out: &mut [f32]) {
+    debug_assert_eq!(gate.len(), up.len());
+    debug_assert_eq!(gate.len(), out.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            unsafe { swiglu_avx2(gate, up, out) };
+            return;
+        }
+    }
+    for i in 0..out.len() {
+        out[i] = up[i] * silu(gate[i]);
+    }
+}
+
+/// llama.cpp `ggml_v_expf` + `ggml_v_silu` (`vec.h` AVX2+FMA).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn swiglu_avx2(gate: &[f32], up: &[f32], out: &mut [f32]) {
+    use std::arch::x86_64::*;
+    let n = out.len();
+    let mut i = 0usize;
+    let one = _mm256_set1_ps(1.0);
+    let zero = _mm256_setzero_ps();
+    while i + 8 <= n {
+        let x = _mm256_loadu_ps(gate.as_ptr().add(i));
+        let g = _mm256_loadu_ps(up.as_ptr().add(i));
+        let silu = _mm256_div_ps(x, _mm256_add_ps(one, ggml_v_expf(_mm256_sub_ps(zero, x))));
+        _mm256_storeu_ps(out.as_mut_ptr().add(i), _mm256_mul_ps(silu, g));
+        i += 8;
+    }
+    for j in i..n {
+        out[j] = up[j] * silu(gate[j]);
+    }
+}
+
+/// llama.cpp `ggml_v_expf` (`vec.h`, AVX2+FMA). Max error ~1.45 + 0.5 ulp.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn ggml_v_expf(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
+    use std::arch::x86_64::*;
+    let r = _mm256_set1_ps(f32::from_bits(0x4b40_0000)); // 0x1.8p23
+    let z = _mm256_fmadd_ps(x, _mm256_set1_ps(f32::from_bits(0x3fb8_aa3b)), r); // 0x1.715476p+0
+    let n = _mm256_sub_ps(z, r);
+    let b = _mm256_fnmadd_ps(
+        n,
+        _mm256_set1_ps(f32::from_bits(0x35bf_be8e)), // 0x1.7f7d1cp-20
+        _mm256_fnmadd_ps(n, _mm256_set1_ps(f32::from_bits(0x3f31_7200)), x), // 0x1.62e4p-1
+    );
+    let e = _mm256_slli_epi32::<23>(_mm256_castps_si256(z));
+    let k = _mm256_castsi256_ps(_mm256_add_epi32(e, _mm256_castps_si256(_mm256_set1_ps(1.0))));
+    let c = _mm256_castps_si256(_mm256_cmp_ps::<_CMP_GT_OQ>(
+        _mm256_andnot_ps(_mm256_set1_ps(-0.0), n),
+        _mm256_set1_ps(126.0),
+    ));
+    let u = _mm256_mul_ps(b, b);
+    let j = _mm256_fmadd_ps(
+        _mm256_fmadd_ps(
+            _mm256_fmadd_ps(
+                _mm256_set1_ps(f32::from_bits(0x3c07_2010)), // 0x1.0e4020p-7
+                b,
+                _mm256_set1_ps(f32::from_bits(0x3d2b_9f17)), // 0x1.573e2ep-5
+            ),
+            u,
+            _mm256_fmadd_ps(
+                _mm256_set1_ps(f32::from_bits(0x3e2a_af33)), // 0x1.555e66p-3
+                b,
+                _mm256_set1_ps(f32::from_bits(0x3eff_fedb)), // 0x1.fffdb6p-2
+            ),
+        ),
+        u,
+        _mm256_mul_ps(_mm256_set1_ps(f32::from_bits(0x3f7f_fff6)), b), // 0x1.ffffecp-1
+    );
+    if _mm256_movemask_ps(_mm256_castsi256_ps(c)) == 0 {
+        return _mm256_fmadd_ps(j, k, k);
+    }
+    let g = _mm256_and_si256(
+        _mm256_castps_si256(_mm256_cmp_ps::<_CMP_LE_OQ>(n, _mm256_setzero_ps())),
+        _mm256_set1_epi32(0x8200_0000u32 as i32),
+    );
+    let s1 = _mm256_castsi256_ps(_mm256_add_epi32(g, _mm256_set1_epi32(0x7f00_0000u32 as i32)));
+    let s2 = _mm256_castsi256_ps(_mm256_sub_epi32(e, g));
+    let d = _mm256_castps_si256(_mm256_cmp_ps::<_CMP_GT_OQ>(
+        _mm256_andnot_ps(_mm256_set1_ps(-0.0), n),
+        _mm256_set1_ps(192.0),
+    ));
+    _mm256_or_ps(
+        _mm256_and_ps(_mm256_castsi256_ps(d), _mm256_mul_ps(s1, s1)),
+        _mm256_andnot_ps(
+            _mm256_castsi256_ps(d),
+            _mm256_or_ps(
+                _mm256_and_ps(
+                    _mm256_castsi256_ps(c),
+                    _mm256_mul_ps(_mm256_fmadd_ps(s2, j, s2), s1),
+                ),
+                _mm256_andnot_ps(_mm256_castsi256_ps(c), _mm256_fmadd_ps(k, j, k)),
+            ),
+        ),
+    )
 }
 
 /// x: [n_tokens, n_in], w: [n_out, n_in] row-major (GGUF [n_in, n_out] columns).
