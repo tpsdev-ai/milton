@@ -16,11 +16,10 @@
 //! GEMM when `ne11 > 3`: AVX2 `quantize_mat_q8_K_4x8` (unclamped,
 //! `_mm256_round_ps` + pack) then AVX2 `ggml_gemm_q4_K_8x8_q8_K` for
 //! the first `n - n%4` rows; remainder stays GEMV + clamped
-//! `quantize_row_q8_K`. Generic 4x8 + generic GEMM (`e9f5f4e`)
-//! *worsened* hello (0.00787 → 0.00922). `f0c6198` / `20f1cdc` are
-//! not in this repo. Do not re-land generic 4x8; the next increment
-//! is the AVX2 kernels in `arch/x86/repack.cpp`. Do not touch
-//! `quantize_row_q8_K` or Q5_K `vec_dot`.
+//! `quantize_row_q8_K`. AVX2 kernels live in `q4k_avx2` (bit-exact
+//! `arch/x86/repack.cpp`). Generic 4x8 + generic GEMM (`e9f5f4e`)
+//! *worsened* hello (0.00787 → 0.00922) — do not re-land. Do not
+//! touch `quantize_row_q8_K` or Q5_K `vec_dot`.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
 use crate::gguf::TensorType;
@@ -822,6 +821,44 @@ pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
     let use_repack = repack_enabled() && w.ty == TensorType::Q4K && w.q4k_8x8.is_some();
     if use_repack {
         let packed = w.q4k_8x8.as_ref().unwrap();
+        #[cfg(target_arch = "x86_64")]
+        {
+            // llama `forward_mul_mat`: GEMM when ne11 > 3, else GEMV.
+            if n_tokens > 3 && crate::q4k_avx2::available() {
+                let n4 = n_tokens - n_tokens % 4;
+                let mut q4x8 =
+                    vec![0u8; (n4 / 4) * n_blocks * crate::q4k_avx2::BLOCK_Q8_KX4_BYTES];
+                unsafe {
+                    for g in 0..(n4 / 4) {
+                        crate::q4k_avx2::quantize_mat_q8_k_4x8(
+                            x[g * 4 * w.n_in..].as_ptr(),
+                            q4x8[g * n_blocks * crate::q4k_avx2::BLOCK_Q8_KX4_BYTES..]
+                                .as_mut_ptr(),
+                            w.n_in as i64,
+                        );
+                    }
+                    crate::q4k_avx2::gemm_q4_k_8x8_q8_k(
+                        w.n_in as i32,
+                        y.as_mut_ptr(),
+                        w.n_out,
+                        packed.as_ptr(),
+                        q4x8.as_ptr(),
+                        n4 as i32,
+                        w.n_out as i32,
+                    );
+                }
+                for t in n4..n_tokens {
+                    let yrow = &qrows[t * n_blocks..(t + 1) * n_blocks];
+                    gemv_q4_k_8x8_q8_k(
+                        packed,
+                        yrow,
+                        w.n_out,
+                        &mut y[t * w.n_out..(t + 1) * w.n_out],
+                    );
+                }
+                return;
+            }
+        }
         for t in 0..n_tokens {
             let yrow = &qrows[t * n_blocks..(t + 1) * n_blocks];
             gemv_q4_k_8x8_q8_k(packed, yrow, w.n_out, &mut y[t * w.n_out..(t + 1) * w.n_out]);

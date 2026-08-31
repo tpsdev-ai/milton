@@ -11,6 +11,8 @@ mod tokenizer;
 mod vocab;
 mod ops;
 mod qmatmul;
+#[cfg(target_arch = "x86_64")]
+mod q4k_avx2;
 mod weights;
 mod model;
 
