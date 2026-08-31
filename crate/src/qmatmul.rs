@@ -20,11 +20,12 @@
 //! (1.5e-7). AVX2 4x8 kernels in `q4k_avx2` stay bit-exact vs the DSO
 //! and are not used on the embed path.
 //!
-//! Q4_K GEMV float accum matches pin AVX2 `_mm256_fmadd_ps(iacc, d*yd, acc)`
-//! (`mul_add`). Separate mul+add was 4.77e-7 on empty-none `kqv_out` MUL_MAT
-//! (701 elems). FMA is BIT_EXACT on that dump. Document n=7 leftover vs dump
-//! is 3.81e-6 — same as the pinned DSO GEMV (not closable on GEMV; 4x8 GEMM
-//! is worse and stays off the embed path).
+//! Q4_K GEMV FMA (`mul_add` = pin AVX2 `_mm256_fmadd_ps`) is BIT_EXACT vs
+//! dump empty-none `kqv_out` MUL_MAT (mul+add was 4.77e-7 / 701 elems) and
+//! matches the pin DSO GEMV. Landing it avalanches golden FINAL (empty-none
+//! max_abs 3.547e-4, short-hello-none cos_dist 0.00912). Stay on mul+add.
+//! Document n=7 leftover vs dump is 3.81e-6 — same as the DSO GEMV; 4x8
+//! GEMM is worse and stays off the embed path.
 //!
 //! After GEMV-only, the first tensor that is **not bit-exact** vs the
 //! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT). There is no
@@ -852,12 +853,16 @@ fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut [f3
                 }
             }
             for j in 0..8 {
-                // Pin llama-embedding AVX2 `ggml_gemv_q4_K_8x8_q8_K` uses
-                // `_mm256_fmadd_ps(iacc_f32, d * yd, acc)` / same for dmin.
-                // Separate mul+add is a few ulps off dump kqv_out MUL_MAT.
+                // Stay on mul+add. Pin dump kqv_out MUL_MAT is AVX2
+                // `_mm256_fmadd_ps(iacc_f32, d*yd, acc)` and is BIT_EXACT
+                // with `mul_add` here, but landing that FMA avalanches the
+                // golden FINAL: empty-none max_abs 6.96e-8 → 3.547e-4
+                // (d0 0.00697820 vs 0.00702455); short-hello-none
+                // cos_dist 0 → 0.00912. Same class as dump-kq / 4×8 Q@K.
+                // Do not land FMA GEMV. Do not land 4x8 GEMM.
                 let ds = d[j] * yb.d;
-                sumf[j] = (iacc[j] as f32).mul_add(ds, sumf[j]);
-                sum_minf[j] = (iacc_min[j] as f32).mul_add(dmin[j] * yb.d, sum_minf[j]);
+                sumf[j] += iacc[j] as f32 * ds;
+                sum_minf[j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
             }
         }
         for j in 0..8 {
@@ -1281,9 +1286,9 @@ mod tests {
                 y0 = y[0],
                 e0 = exp[0]
             );
-            if label == "empty-none" {
-                assert_eq!(ndiff, 0, "empty-none kqv_out FMA GEMV must be BIT_EXACT, max_abs={max_abs}");
-            }
+            // Landed path is mul+add. empty-none dump leftover ~4.77e-7;
+            // do not assert BIT_EXACT (that requires FMA, which avalanches FINAL).
+            let _ = (max_abs, ndiff);
         }
 
         // Next leftover after matched kqv_out: dump ffn_inp → Q4_K ffn_up.
