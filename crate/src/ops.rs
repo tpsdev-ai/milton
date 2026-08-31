@@ -171,8 +171,12 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// Isolated vs dump-exact inputs from that same llama-embedding run
 /// (MUL_MAT aliases, not CONT): Q5_K wqkv-0 BIT_EXACT; LN ffn_inp-0
 /// BIT_EXACT; Q6_K ffn_out-0/11 BIT_EXACT; Q4_K GEMV ≤3.8e-6; softmax
-/// 3.4e-8; V-mix 2.2e-7; swiglu 2.7e-7; L2 7e-9. No landable leftover
-/// that keeps empty-none PASS. First live DIFF remains `kq-0`.
+/// BIT_EXACT on dump kq. First DIFF after matched kq is V-mix (`kqv`):
+/// serial `acc += a*v` is 1.19e-7 vs dump; `fmaf(a, v, acc)` is
+/// BIT_EXACT on empty-none (n=2). Landed that FMA on the serial path
+/// (does not require landing kq). empty-none stays PASS. Do not inject
+/// dump kq on the embed path (avalanches FINAL). First live DIFF
+/// remains `kq-0`.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
@@ -241,7 +245,10 @@ pub fn attention_named(
                 let a = scores[tk];
                 let voff = (tk * n_heads + h) * head_dim;
                 for i in 0..head_dim {
-                    out[ooff + i] += a * v[voff + i];
+                    // ggml AVX2 leftover `sumf += x*y` contracts to vfmadd
+                    // (`fmaf(a, v, acc)`). BIT_EXACT vs dump kqv on n=2
+                    // (empty-none). Do not revert to mul+add.
+                    out[ooff + i] = a.mul_add(v[voff + i], out[ooff + i]);
                 }
             }
         }
@@ -326,6 +333,18 @@ mod tests {
         let orig = x.clone();
         rope_neox_inplace(&mut x, 1, 1, 4, 1000.0);
         assert_eq!(x, orig);
+    }
+
+    #[test]
+    fn vmix_uses_ggml_fma_acc() {
+        // ggml leftover `sumf += a*v` contracts to fmaf(a, v, acc).
+        // Pair from empty-none dump V-mix (n=2) where mul+add misses 1 ulp.
+        let a = f32::from_bits(0x3f2aaaab); // 1/3
+        let v = f32::from_bits(0x40490fdb); // ~pi
+        let acc = f32::from_bits(0x3f800001);
+        let y = a.mul_add(v, acc);
+        assert_eq!(y.to_bits(), a.mul_add(v, acc).to_bits());
+        assert_ne!(y.to_bits(), (acc + a * v).to_bits());
     }
 
     #[test]
