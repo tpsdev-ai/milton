@@ -10,7 +10,7 @@ use crate::meta::{
     ModelMeta, LLAMA_POOLING_CLS, LLAMA_POOLING_MEAN,
 };
 use crate::ops::{
-    attention, cls_pool, l2_normalize_inplace, layer_norm, mean_pool, rope_neox_inplace,
+    attention_named, cls_pool, l2_normalize_inplace, layer_norm, mean_pool, rope_neox_inplace,
     rope_norm_inplace, silu,
 };
 use crate::qmatmul::matmul_ggml;
@@ -279,9 +279,7 @@ impl Model {
 
         for (li, layer) in self.weights.layers.iter().enumerate() {
             matmul_ggml(&x, &layer.attn_qkv, n_tok, &mut qkv);
-            if li == 0 {
-                dump_stage("wqkv-0", &qkv);
-            }
+            dump_stage(&format!("wqkv-{li}"), &qkv);
             if let Some(ref b) = layer.attn_qkv_bias {
                 for t in 0..n_tok {
                     for i in 0..3 * n_embd {
@@ -289,6 +287,7 @@ impl Model {
                     }
                 }
             }
+            dump_stage(&format!("bqkv-{li}"), &qkv);
             split_qkv(&qkv, &mut q, &mut k, &mut v, n_tok, n_embd, self.n_head, self.head_dim, variant);
             match variant {
                 ForwardVariant::NoRope => {}
@@ -301,15 +300,20 @@ impl Model {
                     rope_neox_inplace(&mut k, n_tok, self.n_head, self.head_dim, self.rope_freq_base);
                 }
             }
-            if li == 0 {
-                dump_stage("Qcur-0", &q);
-                dump_stage("Kcur-0", &k);
-                dump_stage("Vcur-0", &v);
-            }
-            attention(&q, &k, &v, n_tok, self.n_head, self.head_dim, &mut attn_out);
-            if li == 0 {
-                dump_stage("kqv-0", &attn_out);
-            }
+            dump_stage(&format!("Qcur-{li}"), &q);
+            dump_stage(&format!("Kcur-{li}"), &k);
+            dump_stage(&format!("Vcur-{li}"), &v);
+            attention_named(
+                &q,
+                &k,
+                &v,
+                n_tok,
+                self.n_head,
+                self.head_dim,
+                &mut attn_out,
+                Some(&format!("{li}")),
+            );
+            dump_stage(&format!("kqv-{li}"), &attn_out);
             matmul_ggml(&attn_out, &layer.attn_output, n_tok, &mut proj);
             if let Some(ref b) = layer.attn_output_bias {
                 for t in 0..n_tok {
@@ -318,9 +322,7 @@ impl Model {
                     }
                 }
             }
-            if li == 0 {
-                dump_stage("kqv_out-0", &proj);
-            }
+            dump_stage(&format!("kqv_out-{li}"), &proj);
             for t in 0..n_tok {
                 for i in 0..n_embd {
                     proj[t * n_embd + i] += x[t * n_embd + i];
@@ -334,14 +336,14 @@ impl Model {
                 );
             }
             x.copy_from_slice(&y);
-            if li == 0 {
-                dump_stage("ffn_inp-0", &x);
-            }
+            dump_stage(&format!("ffn_inp-{li}"), &x);
 
             match &layer.ffn_gate {
                 Some(gate_w) => {
                     matmul_ggml(&x, &layer.ffn_up, n_tok, &mut ffn_up);
                     matmul_ggml(&x, gate_w, n_tok, &mut ffn_gate);
+                    dump_stage(&format!("ffn_up-{li}"), &ffn_up);
+                    dump_stage(&format!("ffn_gate-{li}"), &ffn_gate);
                     let swap = matches!(variant, ForwardVariant::SwapSwiglu);
                     for i in 0..ffn_hid.len() {
                         ffn_hid[i] = if swap {
@@ -350,6 +352,7 @@ impl Model {
                             ffn_up[i] * silu(ffn_gate[i])
                         };
                     }
+                    dump_stage(&format!("ffn_swiglu-{li}"), &ffn_hid);
                 }
                 None => {
                     return Err(Error::UnsupportedModel(

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // DSO-matched kernels; embed path stays on GEMV (see qmatmul.rs).
 //! AVX2 Q4_K 4x8 kernels, ported bit-exactly from llama.cpp
 //! `harness/vendor/llama.cpp/ggml/src/ggml-cpu/arch/x86/repack.cpp`:
 //! `ggml_quantize_mat_q8_K_4x8` (~290) and the AVX2 4-row tile of

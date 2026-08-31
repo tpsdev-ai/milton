@@ -134,8 +134,59 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
     }
 }
 
+/// ggml `ggml_vec_dot_f32` AVX2+FMA path (`vec.cpp` / `simd-mappings.h`):
+/// `GGML_F32_STEP=32`, `EPR=8`, `ARR=4`, four FMA accumulators, then
+/// `GGML_F32x8_REDUCE`. First op that diverges vs llama on
+/// `short-hello-document` / `short-hello-none` is Q@K (`kq`).
+pub fn vec_dot_f32(x: &[f32], y: &[f32]) -> f32 {
+    debug_assert_eq!(x.len(), y.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { vec_dot_f32_avx2(x, y) };
+        }
+    }
+    let mut acc = 0.0f32;
+    for i in 0..x.len() {
+        acc += x[i] * y[i];
+    }
+    acc
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn vec_dot_f32_avx2(x: &[f32], y: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    const STEP: usize = 32;
+    const EPR: usize = 8;
+    let n = x.len();
+    let np = n & !(STEP - 1);
+    let mut sum = [_mm256_setzero_ps(); 4];
+    let mut i = 0;
+    while i < np {
+        for j in 0..4 {
+            let ax = _mm256_loadu_ps(x.as_ptr().add(i + j * EPR));
+            let ay = _mm256_loadu_ps(y.as_ptr().add(i + j * EPR));
+            sum[j] = _mm256_fmadd_ps(ax, ay, sum[j]);
+        }
+        i += STEP;
+    }
+    // GGML_F32x8_REDUCE (ARR=4)
+    sum[0] = _mm256_add_ps(sum[0], sum[2]);
+    sum[1] = _mm256_add_ps(sum[1], sum[3]);
+    sum[0] = _mm256_add_ps(sum[0], sum[1]);
+    let t0 = _mm_add_ps(_mm256_castps256_ps128(sum[0]), _mm256_extractf128_ps(sum[0], 1));
+    let t1 = _mm_hadd_ps(t0, t0);
+    let mut acc = _mm_cvtss_f32(_mm_hadd_ps(t1, t1));
+    for k in np..n {
+        acc += x[k] * y[k];
+    }
+    acc
+}
+
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
+#[allow(dead_code)]
 pub fn attention(
     q: &[f32],
     k: &[f32],
@@ -145,8 +196,33 @@ pub fn attention(
     head_dim: usize,
     out: &mut [f32],
 ) {
+    attention_named(q, k, v, n_tokens, n_heads, head_dim, out, None);
+}
+
+/// Same as `attention`, with optional dump tag (`MILTON_DUMP=1` writes kq / softmax).
+pub fn attention_named(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+    out: &mut [f32],
+    dump_tag: Option<&str>,
+) {
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut scores = vec![0.0f32; n_tokens];
+    let dump = dump_tag.is_some() && std::env::var("MILTON_DUMP").ok().as_deref() == Some("1");
+    let mut kq_raw = if dump {
+        vec![0.0f32; n_heads * n_tokens * n_tokens]
+    } else {
+        Vec::new()
+    };
+    let mut kq_sm = if dump {
+        vec![0.0f32; n_heads * n_tokens * n_tokens]
+    } else {
+        Vec::new()
+    };
     for h in 0..n_heads {
         for tq in 0..n_tokens {
             let qoff = (tq * n_heads + h) * head_dim;
@@ -154,13 +230,19 @@ pub fn attention(
             for tk in 0..n_tokens {
                 let koff = (tk * n_heads + h) * head_dim;
                 let kh = &k[koff..koff + head_dim];
-                let mut dot = 0.0f32;
-                for i in 0..head_dim {
-                    dot += qh[i] * kh[i];
-                }
+                let dot = vec_dot_f32(qh, kh);
                 scores[tk] = dot * scale;
+                if dump {
+                    // llama kq is {n_kv, n_q, n_heads} = tk + tq*n + h*n*n
+                    kq_raw[tk + tq * n_tokens + h * n_tokens * n_tokens] = dot;
+                }
             }
             softmax_inplace(&mut scores);
+            if dump {
+                for tk in 0..n_tokens {
+                    kq_sm[tk + tq * n_tokens + h * n_tokens * n_tokens] = scores[tk];
+                }
+            }
             let ooff = tq * n_heads * head_dim + h * head_dim;
             for i in 0..head_dim {
                 out[ooff + i] = 0.0;
@@ -174,6 +256,26 @@ pub fn attention(
             }
         }
     }
+    if let Some(tag) = dump_tag {
+        if dump {
+            dump_f32(&format!("kq-{tag}"), &kq_raw);
+            dump_f32(&format!("kq_soft_max-{tag}"), &kq_sm);
+        }
+    }
+}
+
+fn dump_f32(name: &str, x: &[f32]) {
+    let path = format!("/tmp/ml-{name}.f32");
+    let mut bytes = Vec::with_capacity(8 + x.len() * 4);
+    bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    bytes.extend_from_slice(&0i64.to_le_bytes());
+    for &v in x {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let _ = std::fs::write(&path, bytes);
 }
 
 /// Mean over the token axis. `x` is [n_tokens, n_embd].
@@ -259,5 +361,17 @@ mod tests {
         softmax_inplace(&mut x);
         let s: f32 = x.iter().sum();
         assert!((s - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vec_dot_f32_matches_scalar_on_head_dim() {
+        let x: Vec<f32> = (0..64).map(|i| (i as f32) * 0.01 - 0.3).collect();
+        let y: Vec<f32> = (0..64).map(|i| (i as f32) * -0.02 + 0.1).collect();
+        let mut scalar = 0.0f32;
+        for i in 0..64 {
+            scalar += x[i] * y[i];
+        }
+        let got = vec_dot_f32(&x, &y);
+        assert!((got - scalar).abs() < 1e-5, "got={got} scalar={scalar}");
     }
 }
