@@ -7,10 +7,20 @@
 //! present — generic `vec_dot` is a different numeric path and seeds a
 //! ~2e-6 residual that later Q8_K `nearest_int` flips compound. Q6_K
 //! uses AVX2 `ggml_vec_dot_q6_K_q8_K` the same way (generic 8-lane is
-//! fallback only). Q4_K with `n_tokens > 3` uses CPU_REPACK GEMM:
-//! `quantize_mat_q8_K_4x8` (unclamped) + `ggml_gemm_q4_K_8x8_q8_K`;
-//! remainder rows stay on GEMV + `quantize_row_q8_K`. Matching the gate
-//! (1e-5 max_abs) requires this path, not dequant-to-f32.
+//! fallback only). Matching the gate (1e-5 max_abs) requires this path,
+//! not dequant-to-f32.
+//!
+//! Q4_K residual after the Q6_K AVX2 port (`509c57a`): GEMV-only
+//! (`n_tokens ≤ 3`) matches goldens (`empty-none` cos_dist=0,
+//! max_abs=7e-8). llama `forward_mul_mat` (`repack.cpp`) switches to
+//! GEMM when `ne11 > 3`: AVX2 `quantize_mat_q8_K_4x8` (unclamped,
+//! `_mm256_round_ps` + pack) then AVX2 `ggml_gemm_q4_K_8x8_q8_K` for
+//! the first `n - n%4` rows; remainder stays GEMV + clamped
+//! `quantize_row_q8_K`. Generic 4x8 + generic GEMM (`e9f5f4e`)
+//! *worsened* hello (0.00787 → 0.00922). `f0c6198` / `20f1cdc` are
+//! not in this repo. Do not re-land generic 4x8; the next increment
+//! is the AVX2 kernels in `arch/x86/repack.cpp`. Do not touch
+//! `quantize_row_q8_K` or Q5_K `vec_dot`.
 
 use crate::dequant::{f16_to_f32, get_scale_min_k4};
 use crate::gguf::TensorType;
@@ -22,7 +32,6 @@ const Q5_K_BYTES: usize = 176;
 const Q6_K_BYTES: usize = 210;
 
 const Q4_KX8_BYTES: usize = 1152; // 8*f16 d + 8*f16 dmin + 96 scales + 1024 qs
-const _Q8_KX4_BYTES: usize = 4 * 4 + QK_K * 4 + (QK_K / 4) * 2; // 1168, block_q8_Kx4
 
 #[derive(Clone, Debug)]
 pub struct QuantMat {
@@ -781,145 +790,6 @@ fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut [f3
     }
 }
 
-/// llama.cpp `block_q8_Kx4` (`repack.h`).
-#[derive(Clone, Copy, Debug)]
-struct BlockQ8Kx4 {
-    d: [f32; 4],
-    qs: [i8; QK_K * 4],
-    bsums: [i16; QK_K / 4],
-}
-
-/// llama.cpp `ggml_quantize_mat_q8_K_4x8_generic`: unclamped `nearest_int`.
-/// Does **not** change `quantize_row_q8_K` (GEMV / Q5_K / Q6_K).
-fn quantize_mat_q8_k_4x8(x: &[f32], n_per_row: usize, out: &mut [BlockQ8Kx4]) {
-    debug_assert_eq!(x.len(), 4 * n_per_row);
-    debug_assert_eq!(n_per_row % QK_K, 0);
-    debug_assert_eq!(out.len(), n_per_row / QK_K);
-    const BLCK: usize = 8;
-    for (i, yb) in out.iter_mut().enumerate() {
-        let mut srcv = [[0.0f32; QK_K]; 4];
-        let mut iscale = [0.0f32; 4];
-        for row in 0..4 {
-            let chunk = &x[row * n_per_row + i * QK_K..row * n_per_row + (i + 1) * QK_K];
-            let mut max = 0.0f32;
-            let mut amax = 0.0f32;
-            for (j, &v) in chunk.iter().enumerate() {
-                srcv[row][j] = v;
-                let ax = v.abs();
-                if ax > amax {
-                    amax = ax;
-                    max = v;
-                }
-            }
-            iscale[row] = if amax != 0.0 { -127.0 / max } else { 0.0 };
-            yb.d[row] = if amax != 0.0 { 1.0 / iscale[row] } else { 0.0 };
-        }
-        yb.qs = [0; QK_K * 4];
-        yb.bsums = [0; QK_K / 4];
-        for j in 0..QK_K * 4 {
-            let src_offset = (j / (4 * BLCK)) * BLCK + (j % BLCK);
-            let src_id = (j % (4 * BLCK)) / BLCK;
-            let index = (((j & 31) >> 3) << 2) + ((j >> 8) << 4) + ((j >> 6) & 3);
-            let q = nearest_int(srcv[src_id][src_offset] * iscale[src_id]) as i8;
-            yb.qs[j] = q;
-            yb.bsums[index] = yb.bsums[index].wrapping_add(i16::from(q));
-        }
-    }
-}
-
-/// llama.cpp `ggml_gemm_q4_K_8x8_q8_K_generic`. `nr` is a multiple of 4.
-fn gemm_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8Kx4], nr: usize, n_out: usize, out: &mut [f32]) {
-    const KMASK1: u32 = 0x3f3f3f3f;
-    const KMASK2: u32 = 0x0f0f0f0f;
-    const KMASK3: u32 = 0x03030303;
-    let n_blocks = y.len() / (nr / 4);
-    debug_assert_eq!(nr % 4, 0);
-    debug_assert_eq!(y.len(), (nr / 4) * n_blocks);
-    debug_assert_eq!(repack.len(), (n_out / 8) * n_blocks * Q4_KX8_BYTES);
-    debug_assert_eq!(out.len(), nr * n_out);
-    let n_groups = n_out / 8;
-    for yg in 0..nr / 4 {
-        let a = &y[yg * n_blocks..(yg + 1) * n_blocks];
-        for x in 0..n_groups {
-            let mut sumf = [[0.0f32; 8]; 4];
-            let mut sum_minf = [[0.0f32; 8]; 4];
-            for l in 0..n_blocks {
-                let off = (x * n_blocks + l) * Q4_KX8_BYTES;
-                let blk = &repack[off..off + Q4_KX8_BYTES];
-                let mut d = [0.0f32; 8];
-                let mut dmin = [0.0f32; 8];
-                for j in 0..8 {
-                    d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
-                    dmin[j] = f16_to_f32(u16::from_le_bytes([
-                        blk[16 + j * 2],
-                        blk[16 + j * 2 + 1],
-                    ]));
-                }
-                let scales = &blk[32..128];
-                let qs = &blk[128..];
-                let mut utmp = [0u32; 32];
-                for sb in 0..8 {
-                    let base = sb * 12;
-                    utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
-                    utmp[sb * 4 + 1] =
-                        u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
-                    utmp[sb * 4 + 2] =
-                        u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
-                    utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & KMASK2)
-                        | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
-                    let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
-                    utmp[sb * 4 + 1] =
-                        (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
-                    utmp[sb * 4 + 2] = uaux_0;
-                    utmp[sb * 4] &= KMASK1;
-                }
-                let mut ub = [0u8; 128];
-                for i in 0..32 {
-                    ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
-                }
-                for k in 0..16 {
-                    let scale_base = (k / 4) * 32;
-                    for m in 0..4 {
-                        for j in 0..8 {
-                            let mut sumi = 0i32;
-                            for i in 0..8 {
-                                let qbyte = qs[k * 64 + j * 8 + i];
-                                let v0 = i32::from(qbyte & 0x0f);
-                                let v1 = i32::from(qbyte >> 4);
-                                let a_off = (k >> 2) * 256 + (k % 4) * 32 + m * 8 + i;
-                                let a0 = i32::from(a[l].qs[a_off]);
-                                let a1 = i32::from(a[l].qs[a_off + 128]);
-                                let s0 = i32::from(ub[scale_base + j]);
-                                let s1 = i32::from(ub[scale_base + 16 + j]);
-                                sumi += v0 * a0 * s0 + v1 * a1 * s1;
-                            }
-                            sumf[m][j] += sumi as f32 * d[j] * a[l].d[m];
-                        }
-                    }
-                }
-                for sb in 0..8 {
-                    let bsum_base = (sb * 8) + /* m later */ 0;
-                    let odd = if sb % 2 == 1 { 6 } else { 0 };
-                    for m in 0..4 {
-                        let boff = (bsum_base + m * 4) - odd;
-                        let bsum =
-                            i32::from(a[l].bsums[boff]) + i32::from(a[l].bsums[boff + 1]);
-                        for j in 0..8 {
-                            sum_minf[m][j] +=
-                                i32::from(ub[8 + sb * 16 + j]) as f32 * bsum as f32 * dmin[j] * a[l].d[m];
-                        }
-                    }
-                }
-            }
-            for m in 0..4 {
-                for j in 0..8 {
-                    out[(yg * 4 + m) * n_out + x * 8 + j] = sumf[m][j] - sum_minf[m][j];
-                }
-            }
-        }
-    }
-}
-
 /// ggml `mul_mat`: dst[o, t] = vec_dot(W_col[o], Q8_K(x[t])).
 pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
     debug_assert_eq!(x.len(), n_tokens * w.n_in);
@@ -952,32 +822,7 @@ pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
     let use_repack = repack_enabled() && w.ty == TensorType::Q4K && w.q4k_8x8.is_some();
     if use_repack {
         let packed = w.q4k_8x8.as_ref().unwrap();
-        // llama.cpp CPU_REPACK: GEMM + unclamped 4x8 Q8_K when src1 rows > 3.
-        let n4 = if n_tokens > 3 {
-            n_tokens - n_tokens % 4
-        } else {
-            0
-        };
-        if n4 > 0 {
-            let ng = n4 / 4;
-            let mut q4x = vec![
-                BlockQ8Kx4 {
-                    d: [0.0; 4],
-                    qs: [0; QK_K * 4],
-                    bsums: [0; QK_K / 4],
-                };
-                ng * n_blocks
-            ];
-            for g in 0..ng {
-                quantize_mat_q8_k_4x8(
-                    &x[g * 4 * w.n_in..(g * 4 + 4) * w.n_in],
-                    w.n_in,
-                    &mut q4x[g * n_blocks..(g + 1) * n_blocks],
-                );
-            }
-            gemm_q4_k_8x8_q8_k(packed, &q4x, n4, w.n_out, &mut y[0..n4 * w.n_out]);
-        }
-        for t in n4..n_tokens {
+        for t in 0..n_tokens {
             let yrow = &qrows[t * n_blocks..(t + 1) * n_blocks];
             gemv_q4_k_8x8_q8_k(packed, yrow, w.n_out, &mut y[t * w.n_out..(t + 1) * w.n_out]);
         }
