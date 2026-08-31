@@ -150,10 +150,12 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// matching DSO `vfmadd231ss` on `summs`. `Qcur-0`/`Kcur-0` RoPE is
 /// bit-exact after matching ggml's apply FMA
 /// (`fmaf(x0,c,-(x1*s))` / `fmaf(x0,s,x1*c)`). `Vcur-0` is bit-exact.
-/// llama.cpp dispatches the **same** `ggml_vec_dot_f32` AVX2 kernel
-/// for n=2 and n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot n=head_dim=64).
-/// Enabling that kernel globally avalanches `empty-none`. Do not land
-/// `2d36deb`. Do not invent a n=7-only AVX2 Q@K split llama does not use.
+/// First remaining dump DIFF is `kq-0` serial f32 (document 6.10e-5 /
+/// empty-none 1.53e-5). llama.cpp dispatches the **same**
+/// `ggml_vec_dot_f32` AVX2 kernel for n=2 and n=7 (`tinyBLAS` rejects
+/// `m%4!=0`; vec_dot n=head_dim=64). Enabling that kernel globally
+/// avalanches `empty-none`. Do not land `2d36deb`. Do not invent a
+/// n=7-only AVX2 Q@K split llama does not use.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
