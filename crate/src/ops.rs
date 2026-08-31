@@ -137,13 +137,13 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// Bidirectional attention. Q/K/V are [n_tokens, n_heads, head_dim].
 /// Out is [n_tokens, n_embd] with heads concatenated (token-major).
 ///
-/// Q@K stays serial f32. First tensor that is not bit-exact vs llama
-/// is `wqkv-0` (Q5_K), not kq: `inp_embd`/`inp_norm` match; then Q/K
-/// already differ (document 1.9e-6 / empty-none 4.8e-7). llama.cpp
-/// dispatches the **same** `ggml_vec_dot_f32` AVX2 kernel for n=2 and
-/// n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot n=head_dim=64). Enabling
-/// that kernel globally avalanches `empty-none` (cos_dist 0 →
-/// 0.02518585). Do not land `2d36deb`. Do not invent a n=7-only AVX2
+/// Q@K stays serial f32. `wqkv-0` Q5_K is bit-exact vs the dump after
+/// matching DSO `vfmadd231ss` on `summs`. First remaining DIFF is
+/// `Qcur-0` RoPE (document 9.54e-7 / empty-none 4.77e-7); `Vcur-0` is
+/// bit-exact. llama.cpp dispatches the **same** `ggml_vec_dot_f32`
+/// AVX2 kernel for n=2 and n=7 (`tinyBLAS` rejects `m%4!=0`; vec_dot
+/// n=head_dim=64). Enabling that kernel globally avalanches
+/// `empty-none`. Do not land `2d36deb`. Do not invent a n=7-only AVX2
 /// Q@K split llama does not use.
 #[allow(dead_code)]
 pub fn attention(
