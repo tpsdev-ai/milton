@@ -160,13 +160,19 @@ pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 /// max_abs=0.03411 d0 0.00697820 vs 0.02447182. Keep serial Q@K.
 /// Do not land `2d36deb`. Do not dispatch AVX2 `ggml_vec_dot_f32`.
 ///
-/// Oracle (pin.json `llama-embedding`, empty-none, n_tokens=2, AVX2+FMA):
-/// golden == pin llama (max_abs=6.4e-9) == eval-callback
-/// `result_embd_pooled`+L2 (5.3e-8) == Milton serial (7.9e-8).
-/// Dump-exact kq Milton is **not** that oracle (cos_dist=0.031).
-/// Do not switch oracles. First live leftover after Q/K is `kq-0`;
-/// isolated softmax/V-mix on dump inputs are 3e-8 / 2e-7 — not landable
-/// without the forbidden kq tree. `ffn_out-1` (1.14e-5) is kq-contaminated.
+/// Oracle (pin.json `llama-embedding`, AVX2+FMA+REPACK, generate-goldens
+/// flags): golden == pin llama **BIT_EXACT** on short-hello-document /
+/// short-hello-none (max_abs=0) and empty-none (max_abs=0, cos_dist≈0).
+/// Milton serial still misses those two (document max_abs=1.434e-2
+/// cos_dist=7.696e-3; none max_abs=2.226e-2 cos_dist=1.317e-2) and
+/// still PASSes empty-none (max_abs=7.86e-8 cos_dist=3.77e-13).
+/// Eval-callback dumps == this llama-embedding dump BIT_EXACT (kq, Q/K,
+/// pooled). Intermediate dump kq is still not the golden path.
+/// Isolated vs dump-exact inputs from that same llama-embedding run
+/// (MUL_MAT aliases, not CONT): Q5_K wqkv-0 BIT_EXACT; LN ffn_inp-0
+/// BIT_EXACT; Q6_K ffn_out-0/11 BIT_EXACT; Q4_K GEMV ≤3.8e-6; softmax
+/// 3.4e-8; V-mix 2.2e-7; swiglu 2.7e-7; L2 7e-9. No landable leftover
+/// that keeps empty-none PASS. First live DIFF remains `kq-0`.
 #[allow(dead_code)]
 pub fn attention(
     q: &[f32],
