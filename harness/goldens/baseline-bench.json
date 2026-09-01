@@ -9,6 +9,7 @@
   "intended_path": "Harper models.embed / harper-fabric-embeddings → llama.cpp",
   "measured": "harper-fabric-embeddings@0.5.0 raw API (same engine Flair registers as models.embed). Harper process facade was not booted in this environment.",
   "status": "ok",
+  "baseline_note": "single/batched/cold_start_ms are the original #22 capture and must not be overwritten. single_thread is the issue #23 addendum (llama.cpp n_threads=1, same host/GGUF).",
   "cold_start_ms": 87.64659999999999,
   "dims": 768,
   "single": {
@@ -35,6 +36,7 @@
   },
   "single_thread": {
     "threads": 1,
+    "role": "thread-matched llama.cpp baseline (issue #23 addendum). Isolates SIMD+WASM from threading.",
     "measured": "harper-fabric-embeddings@0.5.0 raw API, n_threads=1, same host/GGUF as this PR's wasm:bench. Existing single/batched fields above were not overwritten.",
     "cold_start_ms": 68.84276,
     "single": {

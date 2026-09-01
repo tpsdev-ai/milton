@@ -56,6 +56,41 @@ function delta(ours, theirs) {
     baseline: theirs,
     delta: ours - theirs,
     ratio: ours / theirs,
+    gap: theirs / ours,
+  };
+}
+
+function flintInterpretation(singleOurs, batchedOurs, multiSingle, multiBatched, matchedSingle, matchedBatched) {
+  const vsMulti = multiSingle > 0 && Number.isFinite(singleOurs) ? multiSingle / singleOurs : null;
+  const vsMatched = matchedSingle > 0 && Number.isFinite(singleOurs) ? matchedSingle / singleOurs : null;
+  const vsMultiBatched =
+    multiBatched > 0 && Number.isFinite(batchedOurs) ? multiBatched / batchedOurs : null;
+  const vsMatchedBatched =
+    matchedBatched > 0 && Number.isFinite(batchedOurs) ? matchedBatched / batchedOurs : null;
+  const threadingFactor =
+    vsMulti != null && vsMatched != null && vsMatched > 0 ? vsMulti / vsMatched : null;
+  return {
+    note: "issue #23 addendum: (multi-thread gap ÷ thread-matched gap) ≈ remaining threading factor (WASM-threads deferred). Thread-matched residual ≈ SIMD128-vs-AVX2 + inherent WASM overhead (~1.5–2× floor).",
+    single: {
+      vs_multi_thread_gap: vsMulti,
+      vs_thread_matched_gap: vsMatched,
+      threading_factor: threadingFactor,
+      first_principles: {
+        vs_multi_thread_target: "about 10-15x",
+        vs_thread_matched_target: "low single digits",
+        wasm_overhead_floor: "about 1.5-2x",
+        vs_multi_thread_in_band: vsMulti != null && vsMulti >= 8 && vsMulti <= 16,
+        vs_thread_matched_low_single_digits: vsMatched != null && vsMatched < 5,
+        look_if_matched_far_worse:
+          vsMatched != null && vsMatched >= 5
+            ? "thread-matched gap is far worse than low single digits — confirm SIMD128 is actually vectorizing before concluding viability"
+            : null,
+      },
+    },
+    batched: {
+      vs_multi_thread_gap: vsMultiBatched,
+      vs_thread_matched_gap: vsMatchedBatched,
+    },
   };
 }
 
@@ -103,6 +138,14 @@ const receipt = {
     batched_embeddings_per_sec: baseline.batched?.embeddings_per_sec,
     single_thread: baseline.single_thread ?? null,
   },
+  flint_addendum: flintInterpretation(
+    (singleCases.length / singleMs) * 1000,
+    (batchedN / batchedMs) * 1000,
+    baseline.single?.embeddings_per_sec,
+    baseline.batched?.embeddings_per_sec,
+    baseline.single_thread?.single?.embeddings_per_sec,
+    baseline.single_thread?.batched?.embeddings_per_sec,
+  ),
 };
 
 mkdirSync(join(ROOT, "harness", "receipts"), { recursive: true });
