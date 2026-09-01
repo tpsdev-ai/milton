@@ -32,5 +32,20 @@
   "harper_models_embed": {
     "ok": false,
     "error": "harper package not installed; models.embed requires a running Harper process"
+  },
+  "single_thread": {
+    "threads": 1,
+    "measured": "harper-fabric-embeddings@0.5.0 raw API, n_threads=1, same host/GGUF as this PR's wasm:bench. Existing single/batched fields above were not overwritten.",
+    "cold_start_ms": 68.84276,
+    "single": {
+      "n": 8,
+      "ms": 121.46640100000002,
+      "embeddings_per_sec": 65.86183450022529
+    },
+    "batched": {
+      "n": 18,
+      "ms": 1107.412208,
+      "embeddings_per_sec": 16.254110140711038
+    }
   }
 }
