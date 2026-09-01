@@ -1,13 +1,14 @@
 //! Golden-vector gate: Milton Q4_K_M vs F16/F32 llama-embedding oracle.
 //!
-//! Pass = every gated case is within the derived quant budget of `ref_f32`.
-//! The budget is llama.cpp's own Q4_K_M vs F16 error (not a hand-picked
-//! epsilon). `epsilon.json` is the Q4-vs-Q4 run-to-run floor and is not
-//! rewritten here. empty-none and short-hello-none stay locked to that
-//! floor against `vectors.json`. unicode-nfd / newlines-tabs are recorded
-//! but do not fail (pending #15).
+//! Pass = every gated case is within the derived quant budget of `ref_f32`
+//! AND `ratio = cos_dist / quant_budget <= ratio_max` (1.5, pinned in
+//! `quant-budget.json` next to `safety_factor`). The budget is llama.cpp's
+//! own Q4_K_M vs F16 error (not a hand-picked epsilon). `epsilon.json` is
+//! the Q4-vs-Q4 run-to-run floor and is not rewritten here. empty-none and
+//! short-hello-none stay locked to that floor against `vectors.json`.
+//! unicode-nfd / newlines-tabs are recorded but do not fail (pending #15).
 
-use milton::{compare_vectors, Model, Prefix};
+use milton::{compare_vectors, f32_gate_pass, Model, Prefix};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
@@ -64,6 +65,7 @@ struct EpsilonFile {
 #[derive(Debug, Deserialize)]
 struct QuantBudget {
     safety_factor: f32,
+    ratio_max: f32,
     gate_cos_dist: f32,
     max_quant_budget_cos_dist_gated: f32,
     pending_excluded: Vec<String>,
@@ -123,6 +125,10 @@ fn main() -> ExitCode {
 
     if !(budget.gate_cos_dist > 0.0) {
         eprintln!("fail-closed: quant-budget gate_cos_dist must be positive");
+        return ExitCode::from(2);
+    }
+    if !(budget.ratio_max > 0.0) {
+        eprintln!("fail-closed: quant-budget ratio_max must be positive");
         return ExitCode::from(2);
     }
 
@@ -189,7 +195,8 @@ fn main() -> ExitCode {
                         max_cos_q4 = cd_q4;
                     }
                 }
-                let over_f32 = cd > budget.gate_cos_dist;
+                let qb = case_budget.unwrap_or(0.0);
+                let decision = f32_gate_pass(cd, qb, budget.gate_cos_dist, budget.ratio_max);
                 let lock_fail = q4_lock.contains(c.id.as_str())
                     && vs_q4.as_ref().is_some_and(|c| !c.pass);
                 let row = json!({
@@ -201,17 +208,26 @@ fn main() -> ExitCode {
                     "milton_vs_f32_max_abs": vs_f32.max_abs,
                     "milton_vs_q_llama_cos_dist": vs_q4.as_ref().and_then(|c| c.cos_dist),
                     "milton_vs_q_llama_max_abs": vs_q4.as_ref().and_then(|c| c.max_abs),
+                    "ratio_vs_quant_budget": decision.ratio,
+                    "within_absolute": decision.within_absolute,
+                    "within_ratio": decision.within_ratio,
                     "got_head": got.iter().take(4).copied().collect::<Vec<_>>(),
                     "f32_head": ref_f32.iter().take(4).copied().collect::<Vec<_>>(),
                 });
                 if is_pending {
                     pending_rows.push(row);
-                } else if over_f32 || lock_fail {
+                } else if !decision.pass || lock_fail {
                     let mut reason = Vec::new();
-                    if over_f32 {
+                    if !decision.within_absolute {
                         reason.push(format!(
                             "cos_dist={cd} > gate_cos_dist={}",
                             budget.gate_cos_dist
+                        ));
+                    }
+                    if !decision.within_ratio {
+                        reason.push(format!(
+                            "ratio={} > ratio_max={}",
+                            decision.ratio, budget.ratio_max
                         ));
                     }
                     if lock_fail {
@@ -245,6 +261,7 @@ fn main() -> ExitCode {
         "max_milton_vs_q_llama_cos_dist": max_cos_q4,
         "gate_cos_dist": budget.gate_cos_dist,
         "safety_factor": budget.safety_factor,
+        "ratio_max": budget.ratio_max,
         "max_quant_budget_cos_dist_gated": budget.max_quant_budget_cos_dist_gated,
         "q4_epsilon_unchanged": {
             "epsilon": eps.epsilon,

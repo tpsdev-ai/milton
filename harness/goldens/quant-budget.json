@@ -1,7 +1,8 @@
 {
   "schema": "milton.quant-budget/1",
-  "note": "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
+  "note": "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. A gated case also fails if ratio = vs_f32 / quant_budget > ratio_max. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
   "safety_factor": 3,
+  "ratio_max": 1.5,
   "pending_excluded": [
     "unicode-nfd",
     "newlines-tabs"
@@ -12,7 +13,7 @@
   "max_quant_budget_cos_dist_gated": 0.10272989023998036,
   "max_quant_budget_max_abs_gated": 0.06235710094915703,
   "gate_cos_dist": 0.3081896707199411,
-  "formula": "quant_budget[case] = cos_dist(ref_f32, q_llama); gate_cos_dist = max(gated)×3",
+  "formula": "quant_budget[case] = cos_dist(ref_f32, q_llama); gate_cos_dist = max(gated)×3; pass = (cos_dist <= gate_cos_dist) AND (ratio <= ratio_max)",
   "ref_f32": {
     "gguf_file": "nomic-embed-text-v1.5.F16.gguf",
     "gguf_sha256": "9e661465bea62ac3e494b31f3a3fccdad76f89140a75097399f441f4907da99b",

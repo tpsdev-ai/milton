@@ -139,3 +139,111 @@ pub fn compare_vectors(got: &[f32], expected: &[f32], epsilon: f32, epsilon_abs:
         max_abs: Some(max_abs),
     }
 }
+
+/// F32-discriminator decision. Both gate implementations (this crate's
+/// `embed-gate` and `harness/scripts/discriminate-f32.mjs`) must use this
+/// predicate and read `ratio_max` from `quant-budget.json`.
+#[derive(Debug, Clone, Copy)]
+pub struct F32GateDecision {
+    pub pass: bool,
+    pub within_absolute: bool,
+    pub within_ratio: bool,
+    pub ratio: f32,
+}
+
+/// `ratio = cos_dist / quant_budget` (∞ if the budget is 0 and cos_dist > 0).
+pub fn f32_case_ratio(cos_dist: f32, quant_budget_cos_dist: f32) -> f32 {
+    if quant_budget_cos_dist > 0.0 {
+        cos_dist / quant_budget_cos_dist
+    } else if cos_dist == 0.0 {
+        0.0
+    } else {
+        f32::INFINITY
+    }
+}
+
+/// Pass only if within the loose absolute ceiling AND the per-case ratio.
+pub fn f32_gate_pass(
+    cos_dist: f32,
+    quant_budget_cos_dist: f32,
+    gate_cos_dist: f32,
+    ratio_max: f32,
+) -> F32GateDecision {
+    let ratio = f32_case_ratio(cos_dist, quant_budget_cos_dist);
+    let within_absolute = cos_dist <= gate_cos_dist;
+    let within_ratio = ratio <= ratio_max;
+    F32GateDecision {
+        pass: within_absolute && within_ratio,
+        within_absolute,
+        within_ratio,
+        ratio,
+    }
+}
+
+#[cfg(test)]
+mod f32_gate_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_under_absolute_over_ratio_fails() {
+        let gate = 0.30818967_f32;
+        let ratio_max = 1.5_f32;
+        let qb = 0.05_f32;
+        let cd = 0.10_f32;
+        assert!(cd < gate, "under the loose absolute (old gate would PASS)");
+        assert!(cd / qb > ratio_max);
+        let r = f32_gate_pass(cd, qb, gate, ratio_max);
+        assert!(r.within_absolute);
+        assert!(!r.within_ratio);
+        assert!(!r.pass);
+        assert!((r.ratio - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recorded_gated_ratios_0_90_to_1_08_pass() {
+        let gate = 0.30818967_f32;
+        for ratio in [0.90_f32, 1.00, 1.08] {
+            let qb = 0.05_f32;
+            let r = f32_gate_pass(ratio * qb, qb, gate, 1.5);
+            assert!(r.pass, "ratio {ratio}");
+            assert!(r.within_absolute);
+            assert!(r.within_ratio);
+        }
+    }
+
+    #[test]
+    fn tight_tier_1e6_floor_is_tighter_than_any_ratio() {
+        let r = f32_gate_pass(1e-6, 0.10272989, 0.30818967, 1.5);
+        assert!(r.pass);
+        assert!(r.ratio < 1e-4);
+    }
+
+    #[test]
+    fn zero_budget_with_distance_fails_closed() {
+        let r = f32_gate_pass(1e-3, 0.0, 0.30818967, 1.5);
+        assert!(!r.within_ratio);
+        assert!(!r.pass);
+        assert!(r.ratio.is_infinite());
+    }
+
+    #[test]
+    fn rust_gate_reads_ratio_max_from_quant_budget_json() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let raw = std::fs::read_to_string(root.join("harness/goldens/quant-budget.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let ratio_max = v["ratio_max"].as_f64().expect("ratio_max") as f32;
+        let gate = v["gate_cos_dist"].as_f64().expect("gate_cos_dist") as f32;
+        assert!(
+            (ratio_max - 1.5).abs() < 1e-6,
+            "ratio_max must be pinned at 1.5, got {ratio_max}"
+        );
+        // Synthetic: under absolute, over 1.5× own budget → FAIL.
+        let r = f32_gate_pass(0.10, 0.05, gate, ratio_max);
+        assert!(r.within_absolute);
+        assert!(!r.within_ratio);
+        assert!(!r.pass);
+    }
+}
