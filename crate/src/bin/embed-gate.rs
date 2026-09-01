@@ -146,10 +146,13 @@ fn main() -> ExitCode {
 
     let mut failures = Vec::new();
     let mut pending_rows = Vec::new();
+    let mut gated_rows = Vec::new();
     let mut max_cos_f32 = 0.0f32;
     let mut sum_cos_f32 = 0.0f32;
     let mut max_abs_f32 = 0.0f32;
     let mut max_cos_q4 = 0.0f32;
+    let mut min_ratio = f32::INFINITY;
+    let mut max_ratio = 0.0f32;
     let mut n_gated = 0usize;
     let n = corpus.cases.len();
 
@@ -182,6 +185,8 @@ fn main() -> ExitCode {
                 let vs_q4 = q_llama.map(|q| compare_vectors(&got, &q.vector, eps.epsilon, eps.epsilon_abs));
                 let cd_q4 = vs_q4.as_ref().and_then(|c| c.cos_dist).unwrap_or(1.0);
                 let is_pending = pending.contains(&c.id);
+                let qb = case_budget.unwrap_or(0.0);
+                let decision = f32_gate_pass(cd, qb, budget.gate_cos_dist, budget.ratio_max);
                 if !is_pending {
                     n_gated += 1;
                     if cd > max_cos_f32 {
@@ -194,9 +199,22 @@ fn main() -> ExitCode {
                     if cd_q4.is_finite() && cd_q4 > max_cos_q4 {
                         max_cos_q4 = cd_q4;
                     }
+                    if decision.ratio.is_finite() && decision.ratio < min_ratio {
+                        min_ratio = decision.ratio;
+                    }
+                    if decision.ratio.is_finite() && decision.ratio > max_ratio {
+                        max_ratio = decision.ratio;
+                    }
+                    gated_rows.push(json!({
+                        "id": c.id,
+                        "quant_budget_cos_dist": case_budget,
+                        "milton_vs_f32_cos_dist": vs_f32.cos_dist,
+                        "milton_vs_q_llama_cos_dist": vs_q4.as_ref().and_then(|c| c.cos_dist),
+                        "ratio_vs_quant_budget": decision.ratio,
+                        "within_absolute": decision.within_absolute,
+                        "within_ratio": decision.within_ratio,
+                    }));
                 }
-                let qb = case_budget.unwrap_or(0.0);
-                let decision = f32_gate_pass(cd, qb, budget.gate_cos_dist, budget.ratio_max);
                 let lock_fail = q4_lock.contains(c.id.as_str())
                     && vs_q4.as_ref().is_some_and(|c| !c.pass);
                 let row = json!({
@@ -262,6 +280,8 @@ fn main() -> ExitCode {
         "gate_cos_dist": budget.gate_cos_dist,
         "safety_factor": budget.safety_factor,
         "ratio_max": budget.ratio_max,
+        "min_ratio_gated": if min_ratio.is_finite() { min_ratio } else { 0.0 },
+        "max_ratio_gated": max_ratio,
         "max_quant_budget_cos_dist_gated": budget.max_quant_budget_cos_dist_gated,
         "q4_epsilon_unchanged": {
             "epsilon": eps.epsilon,
@@ -282,6 +302,7 @@ fn main() -> ExitCode {
         "ref_f32_llamacpp_commit": budget.ref_f32.llamacpp_commit,
         "pin_f16": pin_f16,
         "failures": failures,
+        "gated": gated_rows,
         "pending": pending_rows,
     });
     println!("{}", serde_json::to_string_pretty(&receipt).unwrap());

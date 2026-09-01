@@ -85,6 +85,8 @@ describe("F32 gate: within_absolute AND ratio <= ratio_max", () => {
     assert.match(rs, /ratio_max/);
     assert.match(derive, /RATIO_MAX = 1\.5/);
     assert.match(derive, /ratio_max: RATIO_MAX/);
+    const demo = readFileSync(join(ROOT, "harness/scripts/demo-ratio-lock.mjs"), "utf8");
+    assert.match(demo, /synthetic-under-absolute-over-ratio/);
   });
 
   it("fail-closed when ratio_max is missing or non-positive", () => {
