@@ -33,8 +33,8 @@ echo "building llama-embedding (CPU, gcc/g++)..."
 # Force gcc: some images have /usr/bin/c++ → clang, which then fails to find -lstdc++.
 rm -rf "$LLAMA_DIR/build"
 # Export first. A `CC=... cmake` prefix only sets cmake's environment;
-# -DCMAKE_C_COMPILER="${CC}" is expanded by this shell. Under set -u that
-# is "CC: unbound variable" on a host that has not exported CC (issue #16).
+# the -D compiler args are expanded by this shell. Under set -u that is
+# "CC: unbound variable" on a host that has not exported CC (issue #16).
 export CC="${CC:-/usr/bin/gcc}"
 export CXX="${CXX:-/usr/bin/g++}"
 cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \

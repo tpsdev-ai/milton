@@ -42,11 +42,14 @@ describe("setup-reference.sh CC/CXX under set -u (issue #16)", () => {
   });
 
   it("setup-reference.sh exports CC/CXX before unguarded \${CC}/\${CXX} expansions", () => {
-    const src = readFileSync(SETUP, "utf8");
-    const exportCC = src.search(/^export CC=/m);
-    const exportCXX = src.search(/^export CXX=/m);
-    const cmakeC = src.indexOf('-DCMAKE_C_COMPILER="${CC}"');
-    const cmakeCXX = src.indexOf('-DCMAKE_CXX_COMPILER="${CXX}"');
+    const code = readFileSync(SETUP, "utf8")
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    const exportCC = code.search(/^export CC=/m);
+    const exportCXX = code.search(/^export CXX=/m);
+    const cmakeC = code.indexOf('-DCMAKE_C_COMPILER="${CC}"');
+    const cmakeCXX = code.indexOf('-DCMAKE_CXX_COMPILER="${CXX}"');
     assert.ok(exportCC >= 0, "missing export CC=");
     assert.ok(exportCXX >= 0, "missing export CXX=");
     assert.ok(cmakeC >= 0, "missing -DCMAKE_C_COMPILER");
@@ -54,7 +57,7 @@ describe("setup-reference.sh CC/CXX under set -u (issue #16)", () => {
     assert.ok(exportCC < cmakeC, "export CC must precede -DCMAKE_C_COMPILER");
     assert.ok(exportCXX < cmakeCXX, "export CXX must precede -DCMAKE_CXX_COMPILER");
     assert.doesNotMatch(
-      src,
+      code,
       /^CC="\$\{CC:-[^}]+\}"\s+CXX="\$\{CXX:-[^}]+\}"\s+cmake/m,
       "prefix-assignment cmake must not return",
     );
