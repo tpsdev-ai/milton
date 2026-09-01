@@ -28,6 +28,86 @@ pub fn layer_norm(x: &[f32], weight: &[f32], bias: &[f32], eps: f32, out: &mut [
     }
 }
 
+/// Match native `f32::mul_add` / AVX2 `vfmadd`.
+///
+/// WASM has no IEEE FMA (`f32x4.relaxed_madd` is mul+add on V8). `libm::fmaf`
+/// widens through f64 and is **not** correctly rounded vs x86 `vfmadd` (the
+/// exact `a*b+c` needs ~72 bits; f64 has 53). One-ulp V-mix residuals then
+/// avalanche across 12 layers. This path is TwoSum(exact f32×f32 in f64, c)
+/// plus a 1-ulp sticky so `as f32` matches hardware RN.
+#[inline(always)]
+pub(crate) fn fmaf32(a: f32, b: f32, c: f32) -> f32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        a.mul_add(b, c)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        fmaf32_soft(a, b, c)
+    }
+}
+
+/// Software f32 FMA. Native tests check this against `mul_add` / `vfmadd`.
+#[inline(always)]
+pub(crate) fn fmaf32_soft(x: f32, y: f32, z: f32) -> f32 {
+    if x.is_nan() || y.is_nan() || z.is_nan() {
+        return x * y + z;
+    }
+    // Two finite f32s have a finite exact product, so fma(x,y,±inf) = ±inf.
+    if !z.is_finite() && x.is_finite() && y.is_finite() {
+        return z;
+    }
+    if !x.is_finite() || !y.is_finite() {
+        return x * y + z;
+    }
+    // f32×f32 is exact in f64 (24+24 ≤ 53).
+    let xy = f64::from(x) * f64::from(y);
+    let z64 = f64::from(z);
+    let s = xy + z64;
+    let v = s - xy;
+    let lo = (xy - (s - v)) + (z64 - v);
+    if lo == 0.0 || !s.is_finite() {
+        return s as f32;
+    }
+    // Encode the residual as 1 ulp of f64 so the f32 conversion sees the
+    // correct side of a midpoint (tie-to-even only when lo == 0).
+    // `f64::next_up`/`next_down` need rustc ≥ 1.86; crate MSRV is 1.83.
+    let s2 = if lo > 0.0 { next_up_f64(s) } else { next_down_f64(s) };
+    s2 as f32
+}
+
+#[inline(always)]
+fn next_up_f64(s: f64) -> f64 {
+    if !s.is_finite() {
+        return s;
+    }
+    if s == 0.0 {
+        return f64::from_bits(1);
+    }
+    let bits = s.to_bits();
+    if s.is_sign_negative() {
+        f64::from_bits(bits - 1)
+    } else {
+        f64::from_bits(bits + 1)
+    }
+}
+
+#[inline(always)]
+fn next_down_f64(s: f64) -> f64 {
+    if !s.is_finite() {
+        return s;
+    }
+    if s == 0.0 {
+        return f64::from_bits(0x8000_0000_0000_0001);
+    }
+    let bits = s.to_bits();
+    if s.is_sign_negative() {
+        f64::from_bits(bits + 1)
+    } else {
+        f64::from_bits(bits - 1)
+    }
+}
+
 /// ggml `ggml_silu_f32`: x / (1 + exp(-x)). Stay on libm.
 ///
 /// Pin dump `ffn_swiglu` leftover vs this is ~2.7e-7 (empty-none 1.93e-7,
@@ -110,8 +190,8 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
                 let x1 = x[base + i + half];
                 let cos_t = cache[2 * i];
                 let sin_t = cache[2 * i + 1];
-                x[base + i] = x0.mul_add(cos_t, -(x1 * sin_t));
-                x[base + i + half] = x0.mul_add(sin_t, x1 * cos_t);
+                x[base + i] = fmaf32(x0, cos_t, -(x1 * sin_t));
+                x[base + i + half] = fmaf32(x0, sin_t, x1 * cos_t);
             }
         }
     }
@@ -255,7 +335,7 @@ pub fn attention_named(
                     // ggml AVX2 leftover `sumf += x*y` contracts to vfmadd
                     // (`fmaf(a, v, acc)`). BIT_EXACT vs dump kqv on n=2
                     // (empty-none). Do not revert to mul+add.
-                    out[ooff + i] = a.mul_add(v[voff + i], out[ooff + i]);
+                    out[ooff + i] = fmaf32(a, v[voff + i], out[ooff + i]);
                 }
             }
         }
@@ -358,7 +438,55 @@ mod tests {
         let acc = f32::from_bits(0x3f800001);
         let y = a.mul_add(v, acc);
         assert_eq!(y.to_bits(), a.mul_add(v, acc).to_bits());
+        assert_eq!(super::fmaf32_soft(a, v, acc).to_bits(), y.to_bits());
         assert_ne!(y.to_bits(), (acc + a * v).to_bits());
+    }
+
+    #[test]
+    fn fmaf32_soft_matches_hardware_mul_add() {
+        let cases: &[(f32, f32, f32)] = &[
+            (1.0, 2.0, 3.0),
+            (0.0, 1.0, 2.0),
+            (-0.0, 1.0, 2.0),
+            (1.0, 0.0, -0.0),
+            (1.5, -2.25, 0.125),
+            (f32::from_bits(0x3f2aaaab), f32::from_bits(0x40490fdb), f32::from_bits(0x3f800001)),
+            (f32::from_bits(0xbfc83027), f32::from_bits(0x3f4be4aa), -(f32::from_bits(0xbef72f7c) * f32::from_bits(0x3f1acd39))),
+            (1e-20, 1e-20, 1.0),
+            (1e20, 1e20, -1e20 * 1e20),
+            (0.1, 0.2, 0.3),
+            (-0.1, 0.2, -0.3),
+        ];
+        for &(a, b, c) in cases {
+            assert_eq!(
+                super::fmaf32_soft(a, b, c).to_bits(),
+                a.mul_add(b, c).to_bits(),
+                "fma({a}, {b}, {c})"
+            );
+        }
+        let mut mismatch = 0u32;
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..50_000u32 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let a = f32::from_bits(0x3f000000 | (seed & 0x7fffff));
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let b = f32::from_bits(0x3e800000 | (seed & 0x7fffff));
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let c = f32::from_bits((seed & 0x80000000) | 0x3f000000 | (seed & 0x7fffff));
+            if super::fmaf32_soft(a, b, c).to_bits() != a.mul_add(b, c).to_bits() {
+                mismatch += 1;
+            }
+        }
+        assert_eq!(mismatch, 0, "LCG fma mismatches vs mul_add");
+        let mut acc_soft = 0.0f32;
+        let mut acc_hw = 0.0f32;
+        for i in 0..5376u32 {
+            let a = f32::from_bits(0x3eaaaaab);
+            let v = ((i.wrapping_mul(13) % 40) as f32) / 20.0 - 1.0;
+            acc_soft = super::fmaf32_soft(a, v, acc_soft);
+            acc_hw = a.mul_add(v, acc_hw);
+        }
+        assert_eq!(acc_soft.to_bits(), acc_hw.to_bits(), "V-mix chain");
     }
 
     #[test]

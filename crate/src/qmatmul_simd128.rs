@@ -68,11 +68,9 @@ fn hsum_float_8(lo: v128, hi: v128) -> f32 {
     f32x4_extract_lane::<0>(sum1)
 }
 
-/// Hardware-FMA stand-in: f32×f32 product is exact in f64, then one add +
-/// one round to f32. Closer to AVX2 `vfmadd` than two f32 ops.
 #[inline(always)]
 fn fmaf32(a: f32, b: f32, c: f32) -> f32 {
-    ((a as f64) * (b as f64) + (c as f64)) as f32
+    crate::ops::fmaf32(a, b, c)
 }
 
 #[inline(always)]

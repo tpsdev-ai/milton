@@ -25,7 +25,7 @@ if [[ "$GOT" != "$BINDGEN_VERSION" ]]; then
   exit 2
 fi
 
-# SIMD128 is also set in crate/.cargo/config.toml; keep the env explicit.
+# SIMD128 — also in crate/.cargo/config.toml.
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128"
 
 cargo build --manifest-path "$CRATE/Cargo.toml" \
