@@ -14,13 +14,13 @@ describe("golden digest schema matches the gate", () => {
 
   it("hashes {id, prefix, dims, vector} — the payload the gate receipt uses", () => {
     assert.match(oracle, /^[0-9a-f]{64}$/);
-    assert.equal(oracle, "06a21ff7933f21ed170a2cdeaae06d8b9db7a6a6b5ac75816d28c467f0d9d6c5");
+    assert.equal(oracle, "8a860ab491b4ab626fa4f4fc31c349947c20782b59834942bae8d8e183296fd0");
   });
 
   it("the old {id, vector}-only hash does not match the oracle (would fail on the pre-fix generator)", () => {
     const stale = sha256json(goldens.items.map((it) => ({ id: it.id, vector: it.vector })));
     assert.notEqual(stale, oracle);
-    assert.equal(stale, "29261420294893312d724c7fe6fd9fd160d7ff5edd1ffb46d6235a1585f57d55");
+    assert.equal(stale, "a9f0f89bd39718cd7ade33ffa3ef606d04df68c2ca287cad3d0d43eacd7dcad2");
   });
 
   it("generate-goldens.mjs calls referenceDigest, not the stale payload", () => {

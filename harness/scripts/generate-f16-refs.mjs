@@ -9,6 +9,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { corpusDigest, loadCorpus } from "../lib/corpus.js";
 import { sha256file } from "../lib/digest.js";
+import { loadEpsilon } from "../lib/goldens.js";
+import { compareVectors } from "../lib/metrics.js";
 import {
   createReferenceEmbedder,
   readLlamaCppPin,
@@ -29,14 +31,50 @@ const embed = createReferenceEmbedder(paths);
 
 const ggufSha = await sha256file(paths.gguf);
 const pinF16 = JSON.parse(readFileSync(join(OUT_DIR, "pin-f16.json"), "utf8"));
+const onlyOracle = process.argv.includes("--only-token-id-oracle");
+let f16FileNote = null;
 if (ggufSha !== pinF16.gguf_sha256) {
-  throw new Error(
-    `fail-closed: F16 GGUF digest ${ggufSha} != pin-f16.json ${pinF16.gguf_sha256}`,
+  if (!onlyOracle) {
+    throw new Error(
+      `fail-closed: F16 GGUF digest ${ggufSha} != pin-f16.json ${pinF16.gguf_sha256}`,
+    );
+  }
+  // Same nomic F16 weights can be packaged with a different GGUF sha
+  // (official nomic-embed-text-v1.5.f16.gguf vs convert_hf_to_gguf.py).
+  // Fail-closed: the file must reproduce the committed unicode-nfc F16 golden
+  // from the same HF token IDs before we trust it for the #15 cases.
+  const tokensForCheck = JSON.parse(readFileSync(join(OUT_DIR, "tokens.json"), "utf8"));
+  const nfcTok = (tokensForCheck.items || []).find((it) => it.id === "unicode-nfc");
+  const existingF16 = JSON.parse(readFileSync(join(OUT_DIR, "vectors-f16.json"), "utf8"));
+  const nfcGolden = (existingF16.items || []).find((it) => it.id === "unicode-nfc");
+  if (!nfcTok?.ids?.length || !nfcGolden?.vector) {
+    throw new Error("fail-closed: cannot prove F16 file equivalence (missing unicode-nfc)");
+  }
+  const { vector: nfcGot } = runEmbedFromTokenIds(nfcTok.ids, paths);
+  const eps = loadEpsilon();
+  const cmp = compareVectors(nfcGot, nfcGolden.vector, {
+    epsilon: eps.epsilon,
+    epsilonAbs: eps.epsilon_abs,
+  });
+  if (!cmp.pass) {
+    throw new Error(
+      `fail-closed: F16 GGUF ${ggufSha} is not vector-equivalent to pin-f16 ${pinF16.gguf_sha256} ` +
+        `(unicode-nfc cos_dist=${cmp.cos_dist} max_abs=${cmp.max_abs})`,
+    );
+  }
+  f16FileNote = {
+    used_gguf_sha256: ggufSha,
+    pin_f16_sha256: pinF16.gguf_sha256,
+    equivalence: "unicode-nfc token-id embed matches committed F16 golden",
+    cos_dist: cmp.cos_dist,
+    max_abs: cmp.max_abs,
+  };
+  process.stderr.write(
+    `F16 GGUF sha differs from pin-f16; unicode-nfc equivalence ok cos_dist=${cmp.cos_dist} max_abs=${cmp.max_abs}\n`,
   );
 }
 const llamaPin = readLlamaCppPin(paths.llamaDir);
 
-const onlyOracle = process.argv.includes("--only-token-id-oracle");
 const tokensPath = join(HERE, "..", "goldens", "tokens.json");
 const tokens = JSON.parse(readFileSync(tokensPath, "utf8"));
 const tokensById = new Map((tokens.items || []).map((it) => [it.id, it]));
@@ -68,7 +106,7 @@ for (const c of corpus.cases) {
       prefix: c.prefix,
       dims: vector.length,
       vector: Array.from(vector),
-      provenance,
+      provenance: f16FileNote ? { ...provenance, f16_file: f16FileNote } : provenance,
     });
     process.stderr.write(`ok dims=${vector.length} d0=${vector[0].toFixed(8)}\n`);
   } else {
@@ -91,7 +129,8 @@ const goldens = {
     tool: TOKEN_ID_ORACLE_TOOL,
     token_ids_source: TOKEN_ID_ORACLE_SOURCE,
     cases: [...TOKEN_ID_ORACLE_CASES],
-    note: "HF token IDs through llama.cpp GGUF forward. Same F16 file as the other 16 cases.",
+    note: "HF token IDs through llama.cpp GGUF forward. Same F16 weights as the other 16 cases.",
+    ...(f16FileNote ? { f16_file: f16FileNote } : {}),
   },
   items,
 };
