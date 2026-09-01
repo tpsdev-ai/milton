@@ -1,0 +1,4 @@
+# Builder-side only. Consumers never compile this crate.
+# SIMD128 is the portable WASM vector ISA (CPU-only — no Metal/CUDA).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

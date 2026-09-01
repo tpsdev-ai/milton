@@ -89,8 +89,11 @@ npm run dequant:must-fail   # wrong block scale / wrong type must go RED
 ## Bench
 
 ```sh
-npm run harness:footprint   # shipped MB + assert zero native binary in src/
+npm run harness:footprint   # shipped MB + assert zero native binary in src/ and wasm/
 npm run harness:bench       # current Flair path (HFE / Harper models.embed) on this host
+npm run wasm:bench          # Milton WASM-SIMD vs baseline-bench.json (delta, not a claim)
+npm run wasm:compare        # native-Rust vs WASM within epsilon.json
+npm run wasm:gate           # WASM vs ref_f32 (absolute + ratio) + Q4 lock
 ```
 
 If the Flair path cannot run here, the bench script exits `2` and writes `BLOCKED` with what was attempted. It will not invent numbers.

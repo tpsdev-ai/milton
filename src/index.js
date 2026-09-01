@@ -1,31 +1,27 @@
 /**
- * Public API: `embed(text, prefix) -> Float32Array`.
+ * Public API: `embed(text, {prefix}) -> Float32Array`.
  *
- * Native Rust forward (this slice, Refs #5). WASM packaging is issue #6.
- * Prefix is config (`document` | `query` | `none`); templates are
- * `search_document: ` / `search_query: ` / passthrough (load-bearing space).
+ * WASM-SIMD path (Refs #6). Same Rust `Model` as the native bins, compiled
+ * with +simd128. Prefix is config (`document` | `query` | `none`); templates
+ * are `search_document: ` / `search_query: ` / passthrough (load-bearing space).
  *
- * Fail-closed: missing milton-embed binary, missing GGUF, or an unverified
- * path refuses. No llama.cpp / onnxruntime in this package — those stay in
- * harness/ as the oracle.
+ * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
+ * refuses. No native compile, no node-gyp, no per-platform build at install.
+ * The reference toolchain stays in harness/ as the oracle.
  */
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import init, { Milton } from "../wasm/milton.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const WASM_PATH = join(ROOT, "wasm", "milton_bg.wasm");
 
 const PREFIX_KINDS = new Set(["document", "query", "none"]);
 
-export function resolveEmbedBin(env = process.env) {
-  if (env.MILTON_EMBED_BIN) return env.MILTON_EMBED_BIN;
-  const release = join(ROOT, "crate", "target", "release", "milton-embed");
-  const debug = join(ROOT, "crate", "target", "debug", "milton-embed");
-  if (existsSync(release)) return release;
-  if (existsSync(debug)) return debug;
-  return null;
+export function resolveWasmPath() {
+  return WASM_PATH;
 }
 
 export function resolveGguf(env = process.env) {
@@ -53,77 +49,42 @@ function resolveFault(prefix) {
   return null;
 }
 
-let child = null;
-let buf = "";
-/** @type {{ resolve: (line: string) => void, reject: (err: Error) => void }[]} */
-let waiters = [];
+let wasmReady = null;
+let instance = null;
 let queue = Promise.resolve();
 
-function ensureChild() {
-  const bin = resolveEmbedBin();
-  const gguf = resolveGguf();
-  if (!bin) {
+function ensureWasm() {
+  if (wasmReady) return wasmReady;
+  if (!existsSync(WASM_PATH)) {
     throw new Error(
-      "fail-closed: milton-embed binary is missing — build crate/ with `cargo build --release --bin milton-embed` (WASM packaging is issue #6; src/ does not guess)",
+      "fail-closed: prebuilt wasm/milton_bg.wasm is missing — this package ships it; do not compile at install",
     );
   }
-  if (!existsSync(gguf)) {
-    throw new Error(
-      `fail-closed: GGUF not found at ${gguf} — set MILTON_GGUF or run npm run harness:setup`,
-    );
-  }
-  if (child && !child.killed) return child;
-
-  buf = "";
-  waiters = [];
-  child = spawn(bin, ["--gguf", gguf, "--jsonl"], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    buf += chunk;
-    let nl;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      const w = waiters.shift();
-      if (w) w.resolve(line);
-    }
-  });
-  const fail = (err) => {
-    const pending = waiters;
-    waiters = [];
-    child = null;
-    for (const w of pending) w.reject(err);
-  };
-  child.on("error", (err) => {
-    fail(new Error(`fail-closed: milton-embed spawn failed: ${err.message}`));
-  });
-  child.on("exit", (code, signal) => {
-    if (waiters.length) {
-      fail(
-        new Error(
-          `fail-closed: milton-embed exited (code=${code} signal=${signal})`,
-        ),
-      );
-    } else {
-      child = null;
-    }
-  });
-  return child;
+  const bytes = readFileSync(WASM_PATH);
+  wasmReady = init({ module_or_path: bytes });
+  return wasmReady;
 }
 
-function requestLine(payload) {
-  return new Promise((resolve, reject) => {
-    const proc = ensureChild();
-    waiters.push({ resolve, reject });
-    proc.stdin.write(`${JSON.stringify(payload)}\n`, (err) => {
-      if (err) {
-        const w = waiters.pop();
-        if (w) w.reject(new Error(`fail-closed: milton-embed stdin: ${err.message}`));
-      }
-    });
-  });
+/**
+ * Load (or reload) the GGUF into the WASM embedder. Called lazily by `embed`.
+ * @param {string} [ggufPath]
+ */
+export async function load(ggufPath) {
+  await ensureWasm();
+  const path = ggufPath || resolveGguf();
+  if (!existsSync(path)) {
+    throw new Error(
+      `fail-closed: GGUF not found at ${path} — set MILTON_GGUF or run npm run harness:setup`,
+    );
+  }
+  const bytes = readFileSync(path);
+  instance = new Milton(bytes);
+  return instance;
+}
+
+async function ensureModel() {
+  if (instance) return instance;
+  return load();
 }
 
 /**
@@ -142,23 +103,11 @@ export async function embed(text, prefix) {
     );
   }
   const fault = resolveFault(prefix);
-  const run = () =>
-    requestLine(fault ? { text, prefix: kind, fault } : { text, prefix: kind }).then((line) => {
-      let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        throw new Error(`fail-closed: milton-embed returned non-JSON: ${line.slice(0, 200)}`);
-      }
-      if (parsed && parsed.error) {
-        throw new Error(`fail-closed: ${parsed.error}`);
-      }
-      if (!parsed || !Array.isArray(parsed.vector) || parsed.vector.length === 0) {
-        throw new Error("fail-closed: milton-embed returned no vector");
-      }
-      return Float32Array.from(parsed.vector);
-    });
-
+  const run = async () => {
+    const model = await ensureModel();
+    const vec = fault ? model.embedWithFault(text, kind, fault) : model.embed(text, kind);
+    return vec instanceof Float32Array ? vec : Float32Array.from(vec);
+  };
   const p = queue.then(run, run);
   queue = p.then(
     () => {},

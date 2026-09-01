@@ -5,7 +5,8 @@
   "type": "module",
   "license": "UNLICENSED",
   "files": [
-    "src"
+    "src",
+    "wasm"
   ],
   "exports": {
     ".": "./src/index.js"
@@ -36,7 +37,11 @@
     "dequant:test": "cargo test --manifest-path crate/Cargo.toml",
     "embed:gate": "cargo run --manifest-path crate/Cargo.toml --release --bin embed-gate",
     "embed:must-fail": "cargo run --manifest-path crate/Cargo.toml --release --bin embed-must-fail",
-    "embed:js-gate": "MILTON_GATE_EMBEDDER=milton node harness/scripts/run-gate.mjs --milton"
+    "embed:js-gate": "MILTON_GATE_EMBEDDER=milton node harness/scripts/run-gate.mjs --milton",
+    "wasm:build": "bash scripts/build-wasm.sh",
+    "wasm:gate": "node harness/scripts/run-wasm-gate.mjs",
+    "wasm:compare": "node harness/scripts/compare-native-wasm.mjs",
+    "wasm:bench": "node harness/scripts/bench-milton.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -207,6 +207,9 @@ pub fn attention_named(
 ) {
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut scores = vec![0.0f32; n_tokens];
+    #[cfg(target_arch = "wasm32")]
+    let dump = false;
+    #[cfg(not(target_arch = "wasm32"))]
     let dump = dump_tag.is_some() && std::env::var("MILTON_DUMP").ok().as_deref() == Some("1");
     let mut kq_raw = if dump {
         vec![0.0f32; n_heads * n_tokens * n_tokens]
@@ -266,17 +269,24 @@ pub fn attention_named(
 }
 
 fn dump_f32(name: &str, x: &[f32]) {
-    let path = format!("/tmp/ml-{name}.f32");
-    let mut bytes = Vec::with_capacity(8 + x.len() * 4);
-    bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    for &v in x {
-        bytes.extend_from_slice(&v.to_le_bytes());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (name, x);
     }
-    let _ = std::fs::write(&path, bytes);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = format!("/tmp/ml-{name}.f32");
+        let mut bytes = Vec::with_capacity(8 + x.len() * 4);
+        bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        for &v in x {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let _ = std::fs::write(&path, bytes);
+    }
 }
 
 /// Mean over the token axis. `x` is [n_tokens, n_embd].
