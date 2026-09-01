@@ -50,6 +50,14 @@ fn default_prefix() -> String {
     "none".into()
 }
 
+/// Next argv after a flag. Missing value is fail-closed, never a panic.
+fn next_arg<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, String> {
+    *i += 1;
+    args.get(*i)
+        .map(String::as_str)
+        .ok_or_else(|| format!("fail-closed: {flag} requires a value"))
+}
+
 #[derive(Debug, Serialize)]
 struct OkOut {
     vector: Vec<f32>,
@@ -68,30 +76,42 @@ fn main() -> ExitCode {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--gguf" => {
-                i += 1;
-                gguf = PathBuf::from(&args[i]);
-            }
-            "--text" => {
-                i += 1;
-                text = Some(args[i].clone());
-            }
-            "--prefix" => {
-                i += 1;
-                prefix = args[i].clone();
-            }
+            "--gguf" => match next_arg(&args, &mut i, "--gguf") {
+                Ok(v) => gguf = PathBuf::from(v),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--text" => match next_arg(&args, &mut i, "--text") {
+                Ok(v) => text = Some(v.to_string()),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--prefix" => match next_arg(&args, &mut i, "--prefix") {
+                Ok(v) => prefix = v.to_string(),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            },
             "--jsonl" => jsonl = true,
             "--hidden" => dump_hidden = true,
-            "--wrong" => {
-                i += 1;
-                match parse_fault(&args[i]) {
+            "--wrong" => match next_arg(&args, &mut i, "--wrong") {
+                Ok(v) => match parse_fault(v) {
                     Ok(f) => fault = f,
                     Err(e) => {
                         eprintln!("{e}");
                         return ExitCode::from(2);
                     }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
                 }
-            }
+            },
             "-h" | "--help" => {
                 eprintln!("milton-embed [--gguf PATH] [--text T --prefix document|query|none] [--jsonl] [--wrong layernorm|pooling|dropped-prefix]");
                 return ExitCode::SUCCESS;
