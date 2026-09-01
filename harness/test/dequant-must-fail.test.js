@@ -50,9 +50,11 @@ describe("dequant must-fail control — gate rejects a deliberately-wrong dequan
 });
 
 describe("light by construction — crate is not a native runtime in src/", () => {
-  it("src/ still has no native binaries after this slice", () => {
+  it("src/ ships WASM glue, not a native addon", () => {
     assert.equal(existsSync(join(ROOT, "src", "index.js")), true);
     const src = readFileSync(join(ROOT, "src", "index.js"), "utf8");
-    assert.match(src, /not implemented yet/);
+    assert.match(src, /milton_bg\.wasm/);
+    assert.doesNotMatch(src, /onnxruntime|llama\.cpp/i);
+    assert.doesNotMatch(src, /milton-embed/);
   });
 });

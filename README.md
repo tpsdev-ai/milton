@@ -24,14 +24,16 @@ Phase 1 (issue #1): the conformance + bench harness lives in `harness/`.
 Tokenizer slice (issue #3): pure Rust nomic WordPiece + Flair prefixes in `crate/`.
 GGUF load + dequant (issue #4): in `crate/`.
 Forward pass (issue #5): native Rust nomic-bert — embeddings → layers → mean-pool → L2.
-`embed(text, prefix) -> Float32Array` in `src/` shells to the native bin (WASM packaging is issue #6).
-See `harness/README.md` and `docs/HARNESS-SPEC.md`.
+WASM-SIMD packaging (issue #6): same crate compiled `wasm32` + `simd128`; `src/`
+loads the prebuilt `wasm/milton_bg.wasm` (`embed(text, {prefix}) -> Float32Array`).
+See `harness/README.md`, `wasm/README.md`, and `docs/HARNESS-SPEC.md`.
 
 ## Layout
 
 ```
 harness/   the golden-vector conformance + footprint/throughput bench
-crate/     Rust tokenizer + GGUF dequant + native forward
-src/       TS glue: embed(text, prefix) -> Float32Array
+crate/     Rust tokenizer + GGUF dequant + forward (native bins + wasm32 lib)
+src/       TS glue: embed(text, {prefix}) -> Float32Array, wasm loader
+wasm/      prebuilt .wasm (SIMD) — not compiled at consumer install
 docs/      HARNESS-SPEC.md, architecture, receipts
 ```

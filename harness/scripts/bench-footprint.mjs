@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
 const SRC = join(ROOT, "src");
+const WASM = join(ROOT, "wasm");
 
 const NATIVE_RE = /\.(node|so|dylib|dll|a)$/i;
 const NATIVE_NAMES = /^(llama|onnxruntime|ggml)/i;
@@ -26,7 +27,11 @@ function walk(dir, acc = []) {
 }
 
 const srcFiles = walk(SRC);
+const wasmFiles = walk(WASM);
 const nativeInSrc = srcFiles.filter(
+  (f) => NATIVE_RE.test(f.name) || NATIVE_NAMES.test(f.name),
+);
+const nativeInWasm = wasmFiles.filter(
   (f) => NATIVE_RE.test(f.name) || NATIVE_NAMES.test(f.name),
 );
 
@@ -46,6 +51,7 @@ try {
 }
 
 const srcBytes = srcFiles.reduce((s, f) => s + f.size, 0);
+const wasmBytes = wasmFiles.reduce((s, f) => s + f.size, 0);
 
 const report = {
   schema: "milton.footprint/1",
@@ -61,12 +67,21 @@ const report = {
     native_binaries: nativeInSrc.map((f) => relative(ROOT, f.path)),
     native_binary_count: nativeInSrc.length,
   },
+  wasm: {
+    files: wasmFiles.map((f) => ({ path: relative(ROOT, f.path), bytes: f.size })),
+    bytes: wasmBytes,
+    mb: wasmBytes / (1024 * 1024),
+    native_binaries: nativeInWasm.map((f) => relative(ROOT, f.path)),
+    native_binary_count: nativeInWasm.length,
+  },
+  shipped_mb: (srcBytes + wasmBytes) / (1024 * 1024),
   npm_pack_dry_run: {
     bytes: packedBytes,
     mb: packedMb,
   },
   assert: {
     zero_native_in_src: nativeInSrc.length === 0,
+    zero_native_in_wasm: nativeInWasm.length === 0,
   },
 };
 
@@ -74,7 +89,7 @@ mkdirSync(join(HERE, "..", "receipts"), { recursive: true });
 writeFileSync(join(HERE, "..", "receipts", "footprint.json"), `${JSON.stringify(report, null, 2)}\n`);
 process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 
-if (nativeInSrc.length !== 0) {
-  process.stderr.write("FAIL: native binary found under src/\n");
+if (nativeInSrc.length !== 0 || nativeInWasm.length !== 0) {
+  process.stderr.write("FAIL: native binary found under src/ or wasm/\n");
   process.exitCode = 1;
 }

@@ -1,9 +1,9 @@
-# Milton crate — tokenizer + GGUF dequant + native forward
+# Milton crate — tokenizer + GGUF dequant + forward
 
 Pure Rust nomic-embed-text-v1.5 WordPiece + Flair prefix convention, GGUF load
 and dequant of the pinned Q4_K_M file, and the nomic-bert forward pass
-(embeddings → transformer layers → mean-pool from the GGUF → L2). WASM
-packaging is a later slice.
+(embeddings → transformer layers → mean-pool from the GGUF → L2). The same
+lib is compiled native (bins) and WASM-SIMD (`wasm/milton_bg.wasm`).
 
 ```rust
 use milton::{tokenize, Prefix};
@@ -63,6 +63,20 @@ Prefixes are `PrefixConfig`, not architecture code.
 ```sh
 cargo run --manifest-path crate/Cargo.toml --release --bin embed-gate
 cargo run --manifest-path crate/Cargo.toml --release --bin embed-must-fail
+```
+
+## WASM-SIMD (issue #6)
+
+Same `Model` / `from_gguf` path, compiled `wasm32-unknown-unknown` with
+`+simd128`. Builder-side only — consumers load the committed `wasm/` artifact
+and never need a Rust toolchain. See `wasm/README.md` and `scripts/build-wasm.sh`.
+
+```sh
+npm run wasm:build     # rustc + wasm-bindgen-cli 0.2.100 → wasm/milton_bg.wasm
+npm run wasm:gate      # WASM vs ref_f32 (ratio + absolute) + Q4 lock
+npm run wasm:compare   # native-Rust vs WASM within epsilon.json
+npm run wasm:bench     # cold-start + throughput vs baseline-bench.json
+npm run wasm:must-fail # layernorm / pooling / dropped-prefix must go RED
 ```
 
 Official embed gate: Milton Q4_K_M vs `ref_f32` (llama-embedding on the original

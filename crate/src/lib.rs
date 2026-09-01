@@ -1,5 +1,5 @@
-//! Milton crate — tokenizer + GGUF dequant + native forward for nomic-embed-text-v1.5.
-//! WASM packaging is a later slice.
+//! Milton crate — tokenizer + GGUF dequant + forward for nomic-embed-text-v1.5.
+//! Same lib is compiled native (bins) and WASM-SIMD (`wasm/`). Not two forwards.
 //!
 //! Tokenizer core (`tokenize`, `apply_prefix`) is pure. Vocab is embedded
 //! from the pinned `vocab.txt`. Forward is GGUF-driven (layer count, dims,
@@ -15,6 +15,9 @@ mod qmatmul;
 mod q4k_avx2;
 mod weights;
 mod model;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 #[cfg(test)]
 mod conformance;

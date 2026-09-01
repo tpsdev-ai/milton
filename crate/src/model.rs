@@ -71,6 +71,16 @@ impl Model {
         Self::from_gguf(&gguf, config)
     }
 
+    /// Load from in-memory GGUF bytes (WASM / tests). Same `from_gguf` path.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::from_bytes_with_config(bytes, EmbedConfig::default())
+    }
+
+    pub fn from_bytes_with_config(bytes: Vec<u8>, config: EmbedConfig) -> Result<Self> {
+        let gguf = GgufFile::from_bytes(bytes)?;
+        Self::from_gguf(&gguf, config)
+    }
+
     pub fn from_gguf(gguf: &GgufFile, config: EmbedConfig) -> Result<Self> {
         let meta = ModelMeta::from_gguf(gguf)?;
         let n_embd = meta.embedding_length as usize;
@@ -450,20 +460,27 @@ fn split_qkv(
 }
 
 fn dump_stage(name: &str, x: &[f32]) {
-    if std::env::var("MILTON_DUMP").ok().as_deref() != Some("1") {
-        return;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (name, x);
     }
-    let path = format!("/tmp/ml-{name}.f32");
-    let mut bytes = Vec::with_capacity(8 + x.len() * 4);
-    bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes()); // placeholder ne[0..3] unused
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    bytes.extend_from_slice(&0i64.to_le_bytes());
-    for &v in x {
-        bytes.extend_from_slice(&v.to_le_bytes());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if std::env::var("MILTON_DUMP").ok().as_deref() != Some("1") {
+            return;
+        }
+        let path = format!("/tmp/ml-{name}.f32");
+        let mut bytes = Vec::with_capacity(8 + x.len() * 4);
+        bytes.extend_from_slice(&(x.len() as i64).to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes()); // placeholder ne[0..3] unused
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        for &v in x {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let _ = std::fs::write(&path, bytes);
     }
-    let _ = std::fs::write(&path, bytes);
 }
 
 fn mean_pool_skip(

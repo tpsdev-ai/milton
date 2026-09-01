@@ -198,6 +198,12 @@ impl GgufFile {
         Self::parse(path.to_path_buf(), bytes)
     }
 
+    /// Parse a GGUF already in memory. WASM uses this so the runtime
+    /// does not need filesystem access at `npm i` or embed time.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::parse(PathBuf::from("<memory>"), bytes)
+    }
+
     pub fn parse(path: PathBuf, bytes: Vec<u8>) -> Result<Self> {
         let file_len = bytes.len() as u64;
         let mut cur = Cursor::new(&bytes, path.clone());

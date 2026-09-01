@@ -48,6 +48,20 @@ fn nomic_metadata_matches_the_file() {
 }
 
 #[test]
+fn from_bytes_matches_open() {
+    let path = gguf_path();
+    if !path.exists() {
+        eprintln!("skip: GGUF not present at {}", path.display());
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read GGUF");
+    let a = milton::GgufFile::open(&path).expect("open");
+    let b = milton::GgufFile::from_bytes(bytes).expect("from_bytes");
+    assert_eq!(a.nomic_v15_meta().unwrap().block_count, b.nomic_v15_meta().unwrap().block_count);
+    assert_eq!(a.tensors.len(), b.tensors.len());
+}
+
+#[test]
 fn unknown_architecture_is_refused() {
     // A tiny GGUF-shaped buffer with a wrong architecture is out of scope
     // for a hand-rolled file; the public constructor is fail-closed via
