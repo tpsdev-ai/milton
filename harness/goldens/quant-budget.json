@@ -1,0 +1,155 @@
+{
+  "schema": "milton.quant-budget/1",
+  "note": "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
+  "safety_factor": 3,
+  "pending_excluded": [
+    "unicode-nfd",
+    "newlines-tabs"
+  ],
+  "n": 18,
+  "n_gated": 16,
+  "max_quant_budget_cos_dist_all": 0.10272989023998036,
+  "max_quant_budget_cos_dist_gated": 0.10272989023998036,
+  "max_quant_budget_max_abs_gated": 0.06235710094915703,
+  "gate_cos_dist": 0.3081896707199411,
+  "formula": "quant_budget[case] = cos_dist(ref_f32, q_llama); gate_cos_dist = max(gated)×3",
+  "ref_f32": {
+    "gguf_file": "nomic-embed-text-v1.5.F16.gguf",
+    "gguf_sha256": "9e661465bea62ac3e494b31f3a3fccdad76f89140a75097399f441f4907da99b",
+    "gguf_file_type": "MOSTLY_F16",
+    "llamacpp_commit": "61bdfd5298a78593be649a1035ee2a120b13c4f0",
+    "source": "nomic-ai/nomic-embed-text-v1.5 via convert_hf_to_gguf.py --outtype f16 (NOT dequantized Q4_K_M)"
+  },
+  "q_llama": {
+    "gguf_file": "nomic-embed-text-v1.5.Q4_K_M.gguf",
+    "vectors": "harness/goldens/vectors.json"
+  },
+  "per_case": [
+    {
+      "id": "short-hello-document",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.05345119721264202,
+      "quant_budget_max_abs": 0.041777501814067364,
+      "pending_issue": null
+    },
+    {
+      "id": "short-hello-query",
+      "prefix": "query",
+      "quant_budget_cos_dist": 0.04906490306072653,
+      "quant_budget_max_abs": 0.04673219658434391,
+      "pending_issue": null
+    },
+    {
+      "id": "short-hello-none",
+      "prefix": "none",
+      "quant_budget_cos_dist": 0.06561767363317073,
+      "quant_budget_max_abs": 0.04267660062760115,
+      "pending_issue": null
+    },
+    {
+      "id": "unicode-cjk-emoji",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.051128069663441744,
+      "quant_budget_max_abs": 0.03654330223798752,
+      "pending_issue": null
+    },
+    {
+      "id": "unicode-nfc",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.04800076740386361,
+      "quant_budget_max_abs": 0.03755219839513302,
+      "pending_issue": null
+    },
+    {
+      "id": "unicode-nfd",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.04942410696506194,
+      "quant_budget_max_abs": 0.039942399598658085,
+      "pending_issue": 15
+    },
+    {
+      "id": "whitespace-padded",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.05042825545576879,
+      "quant_budget_max_abs": 0.03854329511523247,
+      "pending_issue": null
+    },
+    {
+      "id": "whitespace-only",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.04240159511673469,
+      "quant_budget_max_abs": 0.03510459791868925,
+      "pending_issue": null
+    },
+    {
+      "id": "empty-document",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.04057078143539283,
+      "quant_budget_max_abs": 0.03161979420110583,
+      "pending_issue": null
+    },
+    {
+      "id": "empty-none",
+      "prefix": "none",
+      "quant_budget_cos_dist": 0.10272989023998036,
+      "quant_budget_max_abs": 0.06235710094915703,
+      "pending_issue": null
+    },
+    {
+      "id": "newlines-tabs",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.037191663897592986,
+      "quant_budget_max_abs": 0.030788597650825977,
+      "pending_issue": 15
+    },
+    {
+      "id": "punctuation-only",
+      "prefix": "query",
+      "quant_budget_cos_dist": 0.0695569455109486,
+      "quant_budget_max_abs": 0.04280839487910271,
+      "pending_issue": null
+    },
+    {
+      "id": "long-repeated",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.0659240312772218,
+      "quant_budget_max_abs": 0.04079429805278778,
+      "pending_issue": null
+    },
+    {
+      "id": "prefix-already-present",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.04608410024282539,
+      "quant_budget_max_abs": 0.0328066973015666,
+      "pending_issue": null
+    },
+    {
+      "id": "numeric-ids",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.05727630698466135,
+      "quant_budget_max_abs": 0.03777250275015831,
+      "pending_issue": null
+    },
+    {
+      "id": "flair-memory-preference",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.046083144321561686,
+      "quant_budget_max_abs": 0.03446219861507416,
+      "pending_issue": null
+    },
+    {
+      "id": "flair-memory-decision",
+      "prefix": "document",
+      "quant_budget_cos_dist": 0.07398510344823239,
+      "quant_budget_max_abs": 0.04265360166027676,
+      "pending_issue": null
+    },
+    {
+      "id": "flair-query-recall",
+      "prefix": "query",
+      "quant_budget_cos_dist": 0.06504867469484987,
+      "quant_budget_max_abs": 0.04231190122663975,
+      "pending_issue": null
+    }
+  ]
+}

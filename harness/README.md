@@ -27,12 +27,20 @@ The GGUF and the llama.cpp tree live in `harness/vendor/` (gitignored). They are
 ```sh
 npm run harness:setup          # checkout pin.json's llama.cpp commit (fail-closed on leftover drift), build llama-embedding, fetch+verify GGUF
 npm run harness:goldens        # write goldens/vectors.json + pin.json + CLS control
+npm run harness:f16            # llama-embedding on original F16 GGUF → vectors-f16.json
+npm run harness:quant-budget   # derive cos_dist(ref_f32, q_llama) per case
 npm run harness:epsilon        # run reference twice; derive EPSILON / EPSILON_ABS
 ```
 
 ## Gate
 
-For every corpus item:
+Official `embed-gate` (Rust): Milton Q4_K_M vs `ref_f32` (llama-embedding on
+the original HF F16 GGUF). Pass when `cos_dist(milton, ref_f32) <=`
+`quant-budget.json`'s `gate_cos_dist` (max llama Q4-vs-F16 error × 3).
+`epsilon.json` is unchanged — it is the Q4-vs-Q4 run-to-run floor used to
+lock empty-none / short-hello-none and for `embed-must-fail`.
+
+JS replay gate (wiring) still uses the Q4 goldens:
 
 ```
 cosine(got, expected) >= 1 - EPSILON
@@ -40,7 +48,7 @@ AND
 max_i |got_i - expected_i| <= EPSILON_ABS
 ```
 
-Both required. Fail closed: one miss fails the run and names the item. Receipts:
+Both required for the JS replay. Fail closed: one miss fails the run and names the item. Receipts:
 
 ```
 {corpus_digest, reference_digest, n, max_cos_dist, mean_cos_dist, max_abs, pass|fail, failures[]}
@@ -87,11 +95,14 @@ If the Flair path cannot run here, the bench script exits `2` and writes `BLOCKE
 
 ```
 harness/corpus/corpus.json     fixed cases; each documents the failure mode it traps
-harness/goldens/vectors.json   pinned reference vectors
+harness/goldens/vectors.json   pinned Q4_K_M llama-embedding vectors (q_llama)
+harness/goldens/vectors-f16.json  F16/F32 llama-embedding oracle (ref_f32)
+harness/goldens/quant-budget.json  derived cos_dist(ref_f32, q_llama) + gate
 harness/goldens/tokens.json    pinned reference token-ID sequences (tokenizer slice)
 harness/goldens/tokenizer-pin.json  HF nomic tokenizer source + file digests
-harness/goldens/pin.json       GGUF digest + llama.cpp commit/digest
-harness/goldens/epsilon.json   derived tolerances + the measurement that produced them
+harness/goldens/pin.json       Q4_K_M GGUF digest + llama.cpp commit/digest
+harness/goldens/pin-f16.json   F16 GGUF digest + llama.cpp commit
+harness/goldens/epsilon.json   Q4-vs-Q4 run-to-run floor (not the F32 gate)
 harness/goldens/controls.json  CLS-pooled must-fail fixture
 harness/lib/                   gate, metrics, prefixes, receipts, reference runner
 harness/scripts/               setup / generate / derive / gate / bench

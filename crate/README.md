@@ -65,7 +65,12 @@ cargo run --manifest-path crate/Cargo.toml --release --bin embed-gate
 cargo run --manifest-path crate/Cargo.toml --release --bin embed-must-fail
 ```
 
-Never loosen `harness/goldens/epsilon.json` to pass. The oracle is llama.cpp.
+Official embed gate: Milton Q4_K_M vs `ref_f32` (llama-embedding on the original
+HF F16 GGUF). Tolerance is the derived quant budget in
+`harness/goldens/quant-budget.json` (llama.cpp's own Q4_K_M vs F16 error × 3).
+`harness/goldens/epsilon.json` stays the Q4-vs-Q4 run-to-run floor (`1e-6` /
+`1e-5`) and is not rewritten to pass. empty-none and short-hello-none stay
+locked to that floor. unicode-nfd / newlines-tabs are pending #15.
 
 Epsilon is derived the same way as the harness: run the reference twice,
 measure the floor, set the gate a 10× margin above it with a numeric floor
