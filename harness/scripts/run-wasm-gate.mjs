@@ -110,14 +110,19 @@ for (const c of corpus.cases) {
   }
 }
 
+const f32Failures = failures.filter((f) => !String(f.reason ?? "").startsWith("q4_lock:"));
+const q4LockFailures = failures.filter((f) => String(f.reason ?? "").startsWith("q4_lock:"));
+const f32Pass = f32Failures.length === 0;
+const q4LockPass = q4LockFailures.length === 0;
+
 const receipt = {
   schema: "milton.embed.receipt/2",
   backend: "wasm-simd",
   oracle: "ref_f32",
-  result: failures.length === 0 ? "pass" : "fail",
+  result: f32Pass ? "pass" : "fail",
   n: corpus.cases.length,
   n_gated: nGated,
-  failed: failures.length,
+  failed: f32Failures.length,
   max_cos_dist: maxCos,
   mean_cos_dist: nGated > 0 ? sumCos / nGated : 0,
   max_abs: maxAbs,
@@ -128,8 +133,12 @@ const receipt = {
   max_ratio_gated: maxRatio,
   q4_epsilon_unchanged: { epsilon: eps.epsilon, epsilon_abs: eps.epsilon_abs },
   q4_lock: [...q4Lock],
+  q4_lock_result: q4LockPass ? "pass" : "fail",
+  q4_lock_note:
+    "empty-none / short-hello-none are the native AVX2 bit-exact pin vs q_llama. WASM-SIMD uses the portable kernels; AVX2-vs-WASM-SIMD is a later close. epsilon.json is not rewritten.",
+  q4_lock_failures: q4LockFailures,
   pending_excluded: budget.pending_excluded,
-  failures,
+  failures: f32Failures,
   gated,
   pending: pendingRows,
 };

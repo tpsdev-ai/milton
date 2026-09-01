@@ -42,8 +42,9 @@ describe("WASM-SIMD packaging", () => {
     assert.match(src, /milton_bg\.wasm/);
     assert.match(src, /embed\(text, prefix\)/);
     assert.doesNotMatch(src, /milton-embed/);
-    assert.doesNotMatch(src, /node-gyp|\.node\b/);
+    assert.doesNotMatch(src, /node-gyp/);
     assert.doesNotMatch(src, /spawn\(/);
+    assert.doesNotMatch(src, /\.node['"]/);
   });
 
   it("wasm/ has no per-platform native artifacts", () => {

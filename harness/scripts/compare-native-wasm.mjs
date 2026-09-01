@@ -17,7 +17,8 @@ const ROOT = join(HERE, "../..");
 
 const corpus = loadCorpus();
 const eps = loadEpsilon();
-const nativeEmbed = createNativeEmbedder();
+const native = createNativeEmbedder();
+const nativeEmbed = native.embed;
 
 const rows = [];
 let maxCos = 0;
@@ -68,5 +69,6 @@ writeFileSync(
   join(ROOT, "harness", "receipts", "native-vs-wasm.json"),
   `${JSON.stringify(receipt, null, 2)}\n`,
 );
+native.close();
 process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
 if (receipt.result === "fail") process.exitCode = 1;

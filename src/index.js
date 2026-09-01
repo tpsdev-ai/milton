@@ -6,7 +6,7 @@
  * are `search_document: ` / `search_query: ` / passthrough (load-bearing space).
  *
  * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
- * refuses. No native compile, no node-gyp, no per-platform build at install.
+ * refuses. No native compile and no per-platform build at install.
  * The reference toolchain stays in harness/ as the oracle.
  */
 

@@ -28,7 +28,10 @@ export function resolveGguf(env = process.env) {
 }
 
 /**
- * @returns {(text: string, opts: { prefix: string }) => Promise<Float32Array>}
+ * @returns {{
+ *   embed: (text: string, opts: { prefix: string }) => Promise<Float32Array>,
+ *   close: () => void,
+ * }}
  */
 export function createNativeEmbedder() {
   const bin = resolveEmbedBin();
@@ -98,7 +101,15 @@ export function createNativeEmbedder() {
     });
   }
 
-  return async function embed(text, prefix) {
+  function close() {
+    if (child && !child.killed) {
+      child.stdin.end();
+      child.kill("SIGTERM");
+    }
+    child = null;
+  }
+
+  async function embed(text, prefix) {
     const kind = typeof prefix === "string" ? prefix : prefix?.prefix;
     const p = queue.then(() =>
       requestLine({ text, prefix: kind }).then((line) => {
@@ -113,5 +124,7 @@ export function createNativeEmbedder() {
       () => {},
     );
     return p;
-  };
+  }
+
+  return { embed, close };
 }
