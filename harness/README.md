@@ -27,7 +27,9 @@ The GGUF and the llama.cpp tree live in `harness/vendor/` (gitignored). They are
 ```sh
 npm run harness:setup          # checkout pin.json's llama.cpp commit (fail-closed on leftover drift), build llama-embedding, fetch+verify GGUF
 npm run harness:goldens        # write goldens/vectors.json + pin.json + CLS control
+npm run harness:goldens:token-ids  # regenerate unicode-nfd / newlines-tabs via embed-from-token-ids
 npm run harness:f16            # llama-embedding on original F16 GGUF → vectors-f16.json
+npm run harness:f16:token-ids  # same two cases, F16 GGUF + HF token IDs
 npm run harness:quant-budget   # derive cos_dist(ref_f32, q_llama) per case
 npm run harness:epsilon        # run reference twice; derive EPSILON / EPSILON_ABS
 ```
@@ -97,8 +99,10 @@ If the Flair path cannot run here, the bench script exits `2` and writes `BLOCKE
 
 ```
 harness/corpus/corpus.json     fixed cases; each documents the failure mode it traps
-harness/goldens/vectors.json   pinned Q4_K_M llama-embedding vectors (q_llama)
-harness/goldens/vectors-f16.json  F16/F32 llama-embedding oracle (ref_f32)
+harness/goldens/vectors.json   pinned Q4_K_M llama.cpp vectors (q_llama; 2 cases via embed-from-token-ids)
+harness/goldens/vectors-f16.json  F16/F32 llama.cpp oracle (ref_f32; same 2 cases via token IDs)
+harness/goldens/vectors-pre-15-wrong.json  #15 regression lock: old text-path goldens that must FAIL
+harness/tools/embed-from-token-ids.cpp  llama.cpp C API: token IDs → mean-pool → L2
 harness/goldens/quant-budget.json  derived cos_dist(ref_f32, q_llama) + gate
 harness/goldens/tokens.json    pinned reference token-ID sequences (tokenizer slice)
 harness/goldens/tokenizer-pin.json  HF nomic tokenizer source + file digests

@@ -70,7 +70,7 @@ HF F16 GGUF). Tolerance is the derived quant budget in
 `harness/goldens/quant-budget.json` (llama.cpp's own Q4_K_M vs F16 error × 3).
 `harness/goldens/epsilon.json` stays the Q4-vs-Q4 run-to-run floor (`1e-6` /
 `1e-5`) and is not rewritten to pass. empty-none and short-hello-none stay
-locked to that floor. unicode-nfd / newlines-tabs are pending #15.
+locked to that floor. All 18 corpus cases are gated (#15 closed).
 
 Epsilon is derived the same way as the harness: run the reference twice,
 measure the floor, set the gate a 10× margin above it with a numeric floor

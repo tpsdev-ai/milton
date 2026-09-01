@@ -6,7 +6,8 @@
 //! own Q4_K_M vs F16 error (not a hand-picked epsilon). `epsilon.json` is
 //! the Q4-vs-Q4 run-to-run floor and is not rewritten here. empty-none and
 //! short-hello-none stay locked to that floor against `vectors.json`.
-//! unicode-nfd / newlines-tabs are recorded but do not fail (pending #15).
+//! All 18 corpus cases are gated (#15: unicode-nfd / newlines-tabs goldens
+//! are llama.cpp GGUF-forward on HF token IDs).
 
 use milton::{compare_vectors, f32_gate_pass, Model, Prefix};
 use serde::Deserialize;

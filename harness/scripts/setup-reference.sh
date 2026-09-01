@@ -74,4 +74,5 @@ if [[ "$GOT" != "$GGUF_SHA256" ]]; then
   exit 1
 fi
 echo "GGUF ok  sha256=$GOT  bytes=$(wc -c < "$GGUF")"
+bash "$ROOT/harness/scripts/build-embed-from-token-ids.sh"
 echo "setup-reference: done"
