@@ -32,7 +32,12 @@ node "$ROOT/harness/scripts/ensure-llama-pin.mjs" --checkout --dir "$LLAMA_DIR"
 echo "building llama-embedding (CPU, gcc/g++)..."
 # Force gcc: some images have /usr/bin/c++ → clang, which then fails to find -lstdc++.
 rm -rf "$LLAMA_DIR/build"
-CC="${CC:-/usr/bin/gcc}" CXX="${CXX:-/usr/bin/g++}" cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \
+# Export first. A `CC=... cmake` prefix only sets cmake's environment;
+# the -D compiler args are expanded by this shell. Under set -u that is
+# "CC: unbound variable" on a host that has not exported CC (issue #16).
+export CC="${CC:-/usr/bin/gcc}"
+export CXX="${CXX:-/usr/bin/g++}"
+cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="${CC}" \
   -DCMAKE_CXX_COMPILER="${CXX}" \

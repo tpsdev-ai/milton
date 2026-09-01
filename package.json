@@ -17,6 +17,7 @@
     "tokenizer:check": "cargo run --manifest-path crate/Cargo.toml --features cli --bin milton-tokenize -- --check-goldens",
     "tokenizer:must-fail": "cargo test --manifest-path crate/Cargo.toml must_fail -- --nocapture",
     "harness:setup": "bash harness/scripts/setup-reference.sh",
+    "harness:check-cc": "env -u CC -u CXX bash harness/scripts/check-setup-cc-nounset.sh",
     "harness:goldens": "node harness/scripts/generate-goldens.mjs",
     "harness:f16": "node harness/scripts/generate-f16-refs.mjs",
     "harness:quant-budget": "node harness/scripts/derive-quant-budget.mjs",
