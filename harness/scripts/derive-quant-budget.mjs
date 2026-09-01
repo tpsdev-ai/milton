@@ -8,8 +8,9 @@
  *
  * Gate tolerance = max(gated cases) × SAFETY (2–3×). A gated case
  * also fails if ratio = milton_vs_f32 / quant_budget > RATIO_MAX (1.5).
- * Pending #15 (unicode-nfd, newlines-tabs) stay in the table but are
- * excluded from the max. Does not rewrite epsilon.json.
+ * All 18 corpus cases are gated (#15 closed: unicode-nfd / newlines-tabs
+ * goldens are llama.cpp GGUF-forward on HF token IDs). Does not rewrite
+ * epsilon.json.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,7 +23,7 @@ const OUT = join(HERE, "..", "goldens", "quant-budget.json");
 const F16_PATH = join(HERE, "..", "goldens", "vectors-f16.json");
 const PIN_F16 = join(HERE, "..", "goldens", "pin-f16.json");
 
-const PENDING_15 = new Set(["unicode-nfd", "newlines-tabs"]);
+const PENDING_EXCLUDED = new Set(); // #15 closed — all 18 gated
 const SAFETY = 3;
 const RATIO_MAX = 1.5;
 
@@ -47,11 +48,11 @@ for (const q of qLlama.items) {
     prefix: q.prefix,
     quant_budget_cos_dist: cmp.cos_dist,
     quant_budget_max_abs: cmp.max_abs,
-    pending_issue: PENDING_15.has(q.id) ? 15 : null,
+    pending_issue: PENDING_EXCLUDED.has(q.id) ? 15 : null,
   };
   per.push(row);
   maxAll = Math.max(maxAll, cmp.cos_dist);
-  if (!PENDING_15.has(q.id)) {
+  if (!PENDING_EXCLUDED.has(q.id)) {
     maxGated = Math.max(maxGated, cmp.cos_dist);
     maxAbsGated = Math.max(maxAbsGated, cmp.max_abs);
   }
@@ -63,9 +64,9 @@ const record = {
   note: "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. A gated case also fails if ratio = vs_f32 / quant_budget > ratio_max. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
   safety_factor: SAFETY,
   ratio_max: RATIO_MAX,
-  pending_excluded: [...PENDING_15],
+  pending_excluded: [...PENDING_EXCLUDED],
   n: per.length,
-  n_gated: per.length - PENDING_15.size,
+  n_gated: per.length - PENDING_EXCLUDED.size,
   max_quant_budget_cos_dist_all: maxAll,
   max_quant_budget_cos_dist_gated: maxGated,
   max_quant_budget_max_abs_gated: maxAbsGated,

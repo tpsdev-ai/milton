@@ -6,26 +6,92 @@
  * reaching llama.cpp match Flair/HFE (`search_document: ` / `search_query: `).
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyPrefix } from "./prefix.js";
 import { l2Normalize } from "./metrics.js";
+import { TOKEN_ID_ORACLE_SOURCE, TOKEN_ID_ORACLE_TOOL } from "./token-id-oracle.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDOR = join(HERE, "..", "vendor");
 
 export const DEFAULT_GGUF = join(VENDOR, "models", "nomic-embed-text-v1.5.Q4_K_M.gguf");
 export const DEFAULT_LLAMA_EMBEDDING = join(VENDOR, "llama.cpp", "build", "bin", "llama-embedding");
+export const DEFAULT_EMBED_FROM_TOKEN_IDS = join(VENDOR, "bin", "embed-from-token-ids");
 export const PINNED_GGUF_SHA256 = "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac";
+export const BUILD_EMBED_FROM_TOKEN_IDS = join(HERE, "..", "scripts", "build-embed-from-token-ids.sh");
 
 export function resolvePaths(env = process.env) {
   return {
     gguf: env.MILTON_REFERENCE_GGUF || DEFAULT_GGUF,
     bin: env.MILTON_REFERENCE_LLAMA_EMBEDDING || DEFAULT_LLAMA_EMBEDDING,
+    embedFromTokenIds: env.MILTON_REFERENCE_EMBED_FROM_TOKEN_IDS || DEFAULT_EMBED_FROM_TOKEN_IDS,
     llamaDir: env.MILTON_REFERENCE_LLAMACPP || join(VENDOR, "llama.cpp"),
+  };
+}
+
+export function ensureEmbedFromTokenIds(paths = resolvePaths()) {
+  if (existsSync(paths.embedFromTokenIds)) return paths.embedFromTokenIds;
+  execFileSync("bash", [BUILD_EMBED_FROM_TOKEN_IDS], { stdio: "inherit" });
+  if (!existsSync(paths.embedFromTokenIds)) {
+    throw new Error(`fail-closed: ${TOKEN_ID_ORACLE_TOOL} did not produce ${paths.embedFromTokenIds}`);
+  }
+  return paths.embedFromTokenIds;
+}
+
+/**
+ * llama.cpp GGUF forward on exact token IDs (no text tokenizer).
+ * Independent of Milton. Token IDs must come from tokens.json (HF pin).
+ */
+export function runEmbedFromTokenIds(ids, paths = resolvePaths()) {
+  if (!Array.isArray(ids) || !ids.length || !ids.every((n) => Number.isInteger(n))) {
+    throw new Error("fail-closed: token IDs must be a non-empty integer array from tokens.json");
+  }
+  const bin = ensureEmbedFromTokenIds(paths);
+  if (!existsSync(paths.gguf)) {
+    throw new Error(`GGUF not found at ${paths.gguf} — run npm run harness:setup`);
+  }
+  const binDir = dirname(paths.bin);
+  const stdout = execFileSync(bin, [paths.gguf, "--ids", ids.join(",")], {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: `${binDir}${process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : ""}`,
+    },
+  });
+  const jsonStart = stdout.indexOf("{");
+  if (jsonStart < 0) {
+    throw new Error(`embed-from-token-ids: no JSON on stdout:\n${stdout.slice(-400)}`);
+  }
+  const parsed = JSON.parse(stdout.slice(jsonStart));
+  if (parsed?.schema !== "milton.embed-from-token-ids/1" || !Array.isArray(parsed.embedding)) {
+    throw new Error("fail-closed: embed-from-token-ids returned an unexpected schema");
+  }
+  if (parsed.n_ids !== ids.length || parsed.ids?.length !== ids.length) {
+    throw new Error(
+      `fail-closed: embed-from-token-ids n_ids=${parsed.n_ids} != requested ${ids.length}`,
+    );
+  }
+  for (let i = 0; i < ids.length; i++) {
+    if (parsed.ids[i] !== ids[i]) {
+      throw new Error(`fail-closed: embed-from-token-ids echoed id[${i}]=${parsed.ids[i]} != ${ids[i]}`);
+    }
+  }
+  return {
+    vector: l2Normalize(Float32Array.from(parsed.embedding)),
+    provenance: {
+      oracle: "embed-from-token-ids",
+      tool: TOKEN_ID_ORACLE_TOOL,
+      token_ids_source: TOKEN_ID_ORACLE_SOURCE,
+      n_ids: ids.length,
+      ids: [...ids],
+      pooling: parsed.pooling,
+      embd_normalize: parsed.embd_normalize,
+    },
   };
 }
 

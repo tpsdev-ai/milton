@@ -31,7 +31,8 @@ describe("F32 quant budget (derived, not hand-picked)", () => {
     assert.match(budget.ref_f32.source, /NOT dequantized Q4_K_M/);
     assert.equal(budget.safety_factor, 3);
     assert.equal(budget.ratio_max, 1.5);
-    assert.deepEqual(budget.pending_excluded, ["unicode-nfd", "newlines-tabs"]);
+    assert.deepEqual(budget.pending_excluded, []);
+    assert.equal(budget.n_gated, 18);
   });
 
   it("per-case budget is cos_dist(ref_f32, q_llama); gate = max(gated)×3", () => {

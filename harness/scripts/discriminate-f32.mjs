@@ -22,7 +22,7 @@ const F16_PATH = join(HERE, "..", "goldens", "vectors-f16.json");
 const BUDGET_PATH = join(HERE, "..", "goldens", "quant-budget.json");
 const OUT = join("/opt/cursor/artifacts", "discriminate-f32.json");
 
-const PENDING_15 = new Set(["unicode-nfd", "newlines-tabs"]);
+const PENDING_EXCLUDED = new Set(); // #15 closed — all 18 gated
 
 const corpus = loadCorpus();
 const qLlama = loadGoldens();
@@ -77,7 +77,7 @@ let maxMiltonQ4Gated = 0;
 let overBudget = [];
 for (let i = 0; i < milton.length; i++) {
   const id = milton[i].id;
-  const pending = PENDING_15.has(id);
+  const pending = PENDING_EXCLUDED.has(id);
   const vsF32 = compareVectors(milton[i].vector, f16ById.get(id).vector, { epsilon: 0, epsilonAbs: 0 });
   const vsQ4 = compareVectors(milton[i].vector, qById.get(id).vector, { epsilon: 0, epsilonAbs: 0 });
   const qBudget = budget.per_case.find((r) => r.id === id);
@@ -94,7 +94,7 @@ for (let i = 0; i < milton.length; i++) {
   }
   rows.push({
     id,
-    pending_issue: pending ? 15 : null,
+    pending_issue: pending ? 15 : null, // reserved; set is empty after #15
     quant_budget_cos_dist: qBudget.quant_budget_cos_dist,
     milton_vs_f32_cos_dist: vsF32.cos_dist,
     milton_vs_f32_max_abs: vsF32.max_abs,
@@ -125,7 +125,7 @@ const report = {
   max_milton_vs_f32_cos_dist_gated: maxMiltonF32Gated,
   max_milton_vs_q_llama_cos_dist_gated: maxMiltonQ4Gated,
   over_budget_ids: overBudget,
-  pending_excluded: [...PENDING_15],
+  pending_excluded: [...PENDING_EXCLUDED],
   cases: rows,
 };
 

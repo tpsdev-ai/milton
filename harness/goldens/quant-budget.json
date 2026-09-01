@@ -3,12 +3,9 @@
   "note": "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. A gated case also fails if ratio = vs_f32 / quant_budget > ratio_max. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
   "safety_factor": 3,
   "ratio_max": 1.5,
-  "pending_excluded": [
-    "unicode-nfd",
-    "newlines-tabs"
-  ],
+  "pending_excluded": [],
   "n": 18,
-  "n_gated": 16,
+  "n_gated": 18,
   "max_quant_budget_cos_dist_all": 0.10272989023998036,
   "max_quant_budget_cos_dist_gated": 0.10272989023998036,
   "max_quant_budget_max_abs_gated": 0.06235710094915703,
@@ -64,9 +61,9 @@
     {
       "id": "unicode-nfd",
       "prefix": "document",
-      "quant_budget_cos_dist": 0.04942410696506194,
-      "quant_budget_max_abs": 0.039942399598658085,
-      "pending_issue": 15
+      "quant_budget_cos_dist": 0.04800075582341923,
+      "quant_budget_max_abs": 0.037552181631326675,
+      "pending_issue": null
     },
     {
       "id": "whitespace-padded",
@@ -99,9 +96,9 @@
     {
       "id": "newlines-tabs",
       "prefix": "document",
-      "quant_budget_cos_dist": 0.037191663897592986,
-      "quant_budget_max_abs": 0.030788597650825977,
-      "pending_issue": 15
+      "quant_budget_cos_dist": 0.047161608899651375,
+      "quant_budget_max_abs": 0.03446317370980978,
+      "pending_issue": null
     },
     {
       "id": "punctuation-only",
