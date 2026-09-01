@@ -75,9 +75,13 @@ const receipt = {
     n: singleCases.length,
     ms: singleMs,
     embeddings_per_sec: (singleCases.length / singleMs) * 1000,
-    vs_flair: delta(
+    vs_flair_multi_thread: delta(
       (singleCases.length / singleMs) * 1000,
       baseline.single?.embeddings_per_sec,
+    ),
+    vs_flair_thread_matched: delta(
+      (singleCases.length / singleMs) * 1000,
+      baseline.single_thread?.single?.embeddings_per_sec,
     ),
   },
   batched: {
@@ -85,7 +89,11 @@ const receipt = {
     ms: batchedMs,
     embeddings_per_sec: (batchedN / batchedMs) * 1000,
     note: "sequential embed() calls on one WASM instance (no native threads)",
-    vs_flair: delta((batchedN / batchedMs) * 1000, baseline.batched?.embeddings_per_sec),
+    vs_flair_multi_thread: delta((batchedN / batchedMs) * 1000, baseline.batched?.embeddings_per_sec),
+    vs_flair_thread_matched: delta(
+      (batchedN / batchedMs) * 1000,
+      baseline.single_thread?.batched?.embeddings_per_sec,
+    ),
   },
   baseline: {
     source: "harness/goldens/baseline-bench.json",
@@ -93,6 +101,7 @@ const receipt = {
     cold_start_ms: baseline.cold_start_ms,
     single_embeddings_per_sec: baseline.single?.embeddings_per_sec,
     batched_embeddings_per_sec: baseline.batched?.embeddings_per_sec,
+    single_thread: baseline.single_thread ?? null,
   },
 };
 

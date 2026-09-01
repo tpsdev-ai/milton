@@ -48,7 +48,10 @@ pub(crate) fn fmaf32(a: f32, b: f32, c: f32) -> f32 {
 }
 
 /// Software f32 FMA. Native tests check this against `mul_add` / `vfmadd`.
-#[inline(always)]
+/// `inline(never)` so LLVM cannot auto-vectorize V-mix / RoPE into
+/// `f32x4.mul`+`add` (no FMA on WASM; that 1-ulp miss avalanches).
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+#[cfg_attr(not(target_arch = "wasm32"), inline(always))]
 pub(crate) fn fmaf32_soft(x: f32, y: f32, z: f32) -> f32 {
     if x.is_nan() || y.is_nan() || z.is_nan() {
         return x * y + z;
@@ -140,6 +143,11 @@ pub fn matmul(x: &[f32], w: &[f32], n_tokens: usize, n_in: usize, n_out: usize, 
 }
 
 /// ggml softmax: max-subtract, exp, f64 sum, scale.
+///
+/// Native `f32::exp` is glibc `expf`. WASM `f32::exp` is compiler-builtins
+/// and is the first native-vs-WASM split after bit-exact Q@K (`kq-dots`).
+/// Do not swap in musl/`libm::expf` (does not match glibc). Do not copy
+/// glibc (LGPL) into this tree.
 pub fn softmax_inplace(logits: &mut [f32]) {
     let mut max = f32::NEG_INFINITY;
     for &v in logits.iter() {
