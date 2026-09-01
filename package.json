@@ -21,6 +21,7 @@
     "harness:f16": "node harness/scripts/generate-f16-refs.mjs",
     "harness:quant-budget": "node harness/scripts/derive-quant-budget.mjs",
     "embed:discriminate": "node harness/scripts/discriminate-f32.mjs",
+    "embed:ratio-lock": "node harness/scripts/demo-ratio-lock.mjs",
     "harness:epsilon": "node harness/scripts/derive-epsilon.mjs",
     "harness:gate": "node harness/scripts/run-gate.mjs",
     "harness:must-fail": "node --test harness/test/must-fail.test.js",

@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCorpus } from "../lib/corpus.js";
+import { f32GatePass } from "../lib/f32-gate.js";
 import { loadGoldens } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
 
@@ -27,6 +28,12 @@ const corpus = loadCorpus();
 const qLlama = loadGoldens();
 const f16 = JSON.parse(readFileSync(F16_PATH, "utf8"));
 const budget = JSON.parse(readFileSync(BUDGET_PATH, "utf8"));
+if (!(budget.ratio_max > 0)) {
+  throw new Error("fail-closed: quant-budget ratio_max must be positive");
+}
+if (!(budget.gate_cos_dist > 0)) {
+  throw new Error("fail-closed: quant-budget gate_cos_dist must be positive");
+}
 const qById = new Map(qLlama.items.map((it) => [it.id, it]));
 const f16ById = new Map(f16.items.map((it) => [it.id, it]));
 
@@ -74,16 +81,16 @@ for (let i = 0; i < milton.length; i++) {
   const vsF32 = compareVectors(milton[i].vector, f16ById.get(id).vector, { epsilon: 0, epsilonAbs: 0 });
   const vsQ4 = compareVectors(milton[i].vector, qById.get(id).vector, { epsilon: 0, epsilonAbs: 0 });
   const qBudget = budget.per_case.find((r) => r.id === id);
-  const ratio = qBudget.quant_budget_cos_dist > 0
-    ? vsF32.cos_dist / qBudget.quant_budget_cos_dist
-    : vsF32.cos_dist === 0
-      ? 0
-      : Infinity;
-  const within = vsF32.cos_dist <= budget.gate_cos_dist;
+  const decision = f32GatePass({
+    cos_dist: vsF32.cos_dist,
+    quant_budget_cos_dist: qBudget.quant_budget_cos_dist,
+    gate_cos_dist: budget.gate_cos_dist,
+    ratio_max: budget.ratio_max,
+  });
   if (!pending) {
     maxMiltonF32Gated = Math.max(maxMiltonF32Gated, vsF32.cos_dist);
     maxMiltonQ4Gated = Math.max(maxMiltonQ4Gated, vsQ4.cos_dist);
-    if (!within) overBudget.push(id);
+    if (!decision.pass) overBudget.push(id);
   }
   rows.push({
     id,
@@ -93,8 +100,10 @@ for (let i = 0; i < milton.length; i++) {
     milton_vs_f32_max_abs: vsF32.max_abs,
     milton_vs_q_llama_cos_dist: vsQ4.cos_dist,
     milton_vs_q_llama_max_abs: vsQ4.max_abs,
-    ratio_vs_quant_budget: ratio,
-    within_gate: within,
+    ratio_vs_quant_budget: decision.ratio,
+    within_absolute: decision.within_absolute,
+    within_ratio: decision.within_ratio,
+    within_gate: decision.pass,
     milton_head: milton[i].vector.slice(0, 4),
     f32_head: f16ById.get(id).vector.slice(0, 4),
     q_llama_head: qById.get(id).vector.slice(0, 4),
@@ -111,6 +120,7 @@ const report = {
   verdict,
   gate_cos_dist: budget.gate_cos_dist,
   safety_factor: budget.safety_factor,
+  ratio_max: budget.ratio_max,
   max_quant_budget_cos_dist_gated: budget.max_quant_budget_cos_dist_gated,
   max_milton_vs_f32_cos_dist_gated: maxMiltonF32Gated,
   max_milton_vs_q_llama_cos_dist_gated: maxMiltonQ4Gated,

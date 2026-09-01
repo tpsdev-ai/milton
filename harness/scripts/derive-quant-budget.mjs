@@ -6,9 +6,10 @@
  * ref_f32 = llama-embedding on original F16 GGUF (vectors-f16.json)
  * q_llama = llama-embedding on pinned Q4_K_M (vectors.json)
  *
- * Gate tolerance = max(gated cases) × SAFETY (2–3×). Pending #15
- * (unicode-nfd, newlines-tabs) stay in the table but are excluded
- * from the max. Does not rewrite epsilon.json.
+ * Gate tolerance = max(gated cases) × SAFETY (2–3×). A gated case
+ * also fails if ratio = milton_vs_f32 / quant_budget > RATIO_MAX (1.5).
+ * Pending #15 (unicode-nfd, newlines-tabs) stay in the table but are
+ * excluded from the max. Does not rewrite epsilon.json.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,6 +24,7 @@ const PIN_F16 = join(HERE, "..", "goldens", "pin-f16.json");
 
 const PENDING_15 = new Set(["unicode-nfd", "newlines-tabs"]);
 const SAFETY = 3;
+const RATIO_MAX = 1.5;
 
 const qLlama = loadGoldens();
 const f16 = JSON.parse(readFileSync(F16_PATH, "utf8"));
@@ -58,8 +60,9 @@ for (const q of qLlama.items) {
 const gate_cos = maxGated * SAFETY;
 const record = {
   schema: "milton.quant-budget/1",
-  note: "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
+  note: "llama.cpp's own quantization error: cos_dist(llama-embedding F16, llama-embedding Q4_K_M). Gate = max(gated)×3. A gated case also fails if ratio = vs_f32 / quant_budget > ratio_max. epsilon.json is unchanged (Q4-vs-Q4 run-to-run floor).",
   safety_factor: SAFETY,
+  ratio_max: RATIO_MAX,
   pending_excluded: [...PENDING_15],
   n: per.length,
   n_gated: per.length - PENDING_15.size,
@@ -67,7 +70,7 @@ const record = {
   max_quant_budget_cos_dist_gated: maxGated,
   max_quant_budget_max_abs_gated: maxAbsGated,
   gate_cos_dist: gate_cos,
-  formula: "quant_budget[case] = cos_dist(ref_f32, q_llama); gate_cos_dist = max(gated)×3",
+  formula: "quant_budget[case] = cos_dist(ref_f32, q_llama); gate_cos_dist = max(gated)×3; pass = (cos_dist <= gate_cos_dist) AND (ratio <= ratio_max)",
   ref_f32: {
     gguf_file: pinF16.gguf_file,
     gguf_sha256: pinF16.gguf_sha256,

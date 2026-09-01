@@ -35,8 +35,10 @@ npm run harness:epsilon        # run reference twice; derive EPSILON / EPSILON_A
 ## Gate
 
 Official `embed-gate` (Rust): Milton Q4_K_M vs `ref_f32` (llama-embedding on
-the original HF F16 GGUF). Pass when `cos_dist(milton, ref_f32) <=`
-`quant-budget.json`'s `gate_cos_dist` (max llama Q4-vs-F16 error × 3).
+the original HF F16 GGUF). A gated case passes only when
+`cos_dist(milton, ref_f32) <= gate_cos_dist` (max llama Q4-vs-F16 error × 3)
+**and** `ratio = cos_dist / quant_budget <= ratio_max` (1.5). Both bounds
+are read from `quant-budget.json` so the JS discriminator cannot diverge.
 `epsilon.json` is unchanged — it is the Q4-vs-Q4 run-to-run floor used to
 lock empty-none / short-hello-none and for `embed-must-fail`.
 

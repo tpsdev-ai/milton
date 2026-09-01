@@ -30,6 +30,7 @@ describe("F32 quant budget (derived, not hand-picked)", () => {
     );
     assert.match(budget.ref_f32.source, /NOT dequantized Q4_K_M/);
     assert.equal(budget.safety_factor, 3);
+    assert.equal(budget.ratio_max, 1.5);
     assert.deepEqual(budget.pending_excluded, ["unicode-nfd", "newlines-tabs"]);
   });
 
