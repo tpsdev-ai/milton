@@ -13,6 +13,8 @@ mod ops;
 mod qmatmul;
 #[cfg(target_arch = "x86_64")]
 mod q4k_avx2;
+#[cfg(target_arch = "wasm32")]
+mod qmatmul_simd128;
 mod weights;
 mod model;
 
