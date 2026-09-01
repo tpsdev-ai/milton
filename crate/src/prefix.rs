@@ -75,17 +75,58 @@ impl fmt::Display for PrefixError {
 
 impl std::error::Error for PrefixError {}
 
-/// Concatenate the Flair template and `text`. Unconditional — already-prefixed
-/// bodies are double-prefixed, matching Flair.
-pub fn apply_prefix(text: &str, prefix: Prefix) -> String {
-    let p = prefix.as_str();
-    if p.is_empty() {
-        return text.to_string();
+/// Prefix templates as **config**, not architecture code.
+///
+/// v1's default is Flair's nomic convention (`search_document: ` /
+/// `search_query: ` / passthrough). The space after the colon is load-bearing.
+/// A second BERT-family file is a new config, not a rewrite. No model registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefixConfig {
+    pub document: String,
+    pub query: String,
+    pub none: String,
+}
+
+impl Default for PrefixConfig {
+    fn default() -> Self {
+        Self::flair_nomic()
     }
-    let mut out = String::with_capacity(p.len() + text.len());
-    out.push_str(p);
-    out.push_str(text);
-    out
+}
+
+impl PrefixConfig {
+    /// v1 verified config — byte-identical to `harness/lib/prefix.js`.
+    pub fn flair_nomic() -> Self {
+        Self {
+            document: Prefix::DOCUMENT.to_string(),
+            query: Prefix::QUERY.to_string(),
+            none: String::new(),
+        }
+    }
+
+    pub fn template(&self, prefix: Prefix) -> &str {
+        match prefix {
+            Prefix::Document => &self.document,
+            Prefix::Query => &self.query,
+            Prefix::None => &self.none,
+        }
+    }
+
+    pub fn apply(&self, text: &str, prefix: Prefix) -> String {
+        let p = self.template(prefix);
+        if p.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(p.len() + text.len());
+        out.push_str(p);
+        out.push_str(text);
+        out
+    }
+}
+
+/// Concatenate the configured template and `text`. Unconditional — already-prefixed
+/// bodies are double-prefixed, matching Flair. Uses the v1 Flair config.
+pub fn apply_prefix(text: &str, prefix: Prefix) -> String {
+    PrefixConfig::default().apply(text, prefix)
 }
 
 #[cfg(test)]

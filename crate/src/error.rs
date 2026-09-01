@@ -13,6 +13,9 @@ pub enum Error {
     InvalidTensorData(String),
     MissingTensor(String),
     UnsupportedModel(String),
+    ContextLength { n_tokens: usize, context_length: u64 },
+    UnsupportedPooling(String),
+    Prefix(String),
 }
 
 impl fmt::Display for Error {
@@ -32,6 +35,15 @@ impl fmt::Display for Error {
             Self::InvalidTensorData(msg) => write!(f, "invalid tensor data: {msg}"),
             Self::MissingTensor(name) => write!(f, "missing tensor {name}"),
             Self::UnsupportedModel(msg) => write!(f, "unsupported model: {msg}"),
+            Self::ContextLength {
+                n_tokens,
+                context_length,
+            } => write!(
+                f,
+                "fail-closed: sequence length {n_tokens} exceeds GGUF context_length {context_length}"
+            ),
+            Self::UnsupportedPooling(msg) => write!(f, "fail-closed: unsupported pooling: {msg}"),
+            Self::Prefix(msg) => write!(f, "{msg}"),
         }
     }
 }

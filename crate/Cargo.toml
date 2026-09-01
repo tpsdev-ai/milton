@@ -3,7 +3,7 @@ name = "milton"
 version = "0.0.0"
 edition = "2021"
 license = "UNLICENSED"
-description = "In-process nomic-embed-text-v1.5 embeddings for Flair (tokenizer + GGUF dequant)"
+description = "In-process nomic-embed-text-v1.5 embeddings for Flair (tokenizer + GGUF dequant + forward)"
 publish = false
 repository = "https://github.com/tpsdev-ai/milton"
 rust-version = "1.83"
@@ -24,6 +24,22 @@ path = "src/bin/dequant-gate.rs"
 [[bin]]
 name = "dequant-must-fail"
 path = "src/bin/dequant-must-fail.rs"
+
+[[bin]]
+name = "dump-gguf"
+path = "src/bin/dump-gguf.rs"
+
+[[bin]]
+name = "milton-embed"
+path = "src/bin/milton-embed.rs"
+
+[[bin]]
+name = "embed-gate"
+path = "src/bin/embed-gate.rs"
+
+[[bin]]
+name = "embed-must-fail"
+path = "src/bin/embed-must-fail.rs"
 
 [features]
 default = []

@@ -1,8 +1,9 @@
-# Milton crate — tokenizer + GGUF dequant
+# Milton crate — tokenizer + GGUF dequant + native forward
 
-Pure Rust nomic-embed-text-v1.5 WordPiece + Flair prefix convention, plus GGUF
-load and dequant of the pinned Q4_K_M file. Forward / mean-pool / L2 and WASM
-packaging are later slices.
+Pure Rust nomic-embed-text-v1.5 WordPiece + Flair prefix convention, GGUF load
+and dequant of the pinned Q4_K_M file, and the nomic-bert forward pass
+(embeddings → transformer layers → mean-pool from the GGUF → L2). WASM
+packaging is a later slice.
 
 ```rust
 use milton::{tokenize, Prefix};
@@ -52,6 +53,24 @@ cargo test --manifest-path crate/Cargo.toml
 cargo run --manifest-path crate/Cargo.toml --bin dequant-gate
 cargo run --manifest-path crate/Cargo.toml --bin dequant-must-fail
 ```
+
+## Native forward (issue #5)
+
+GGUF-driven nomic-bert: token + type-0 embeddings, post-norm layers, RoPE NEOX,
+SwiGLU, mean pool (`nomic-bert.pooling_type = 1`), L2 (`--embd-normalize 2`).
+Prefixes are `PrefixConfig`, not architecture code.
+
+```sh
+cargo run --manifest-path crate/Cargo.toml --release --bin embed-gate
+cargo run --manifest-path crate/Cargo.toml --release --bin embed-must-fail
+```
+
+Official embed gate: Milton Q4_K_M vs `ref_f32` (llama-embedding on the original
+HF F16 GGUF). Tolerance is the derived quant budget in
+`harness/goldens/quant-budget.json` (llama.cpp's own Q4_K_M vs F16 error × 3).
+`harness/goldens/epsilon.json` stays the Q4-vs-Q4 run-to-run floor (`1e-6` /
+`1e-5`) and is not rewritten to pass. empty-none and short-hello-none stay
+locked to that floor. unicode-nfd / newlines-tabs are pending #15.
 
 Epsilon is derived the same way as the harness: run the reference twice,
 measure the floor, set the gate a 10× margin above it with a numeric floor
