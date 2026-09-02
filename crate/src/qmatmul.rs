@@ -80,10 +80,10 @@ impl QuantMat {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct BlockQ8K {
-    d: f32,
-    qs: [i8; QK_K],
-    bsums: [i16; QK_K / 16],
+pub(crate) struct BlockQ8K {
+    pub d: f32,
+    pub qs: [i8; QK_K],
+    pub bsums: [i16; QK_K / 16],
 }
 
 /// ggml `nearest_int`: magic-number round, memcpy float bits → int.
@@ -180,6 +180,7 @@ fn vec_dot_q4_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     sumf
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn unpack_scale_min_k4(scales12: &[u8]) -> ([u8; 8], [u8; 8]) {
     const KMASK1: u32 = 0x3f3f3f3f;
     const KMASK2: u32 = 0x0f0f0f0f;
@@ -209,6 +210,11 @@ fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
             return unsafe { vec_dot_q5_k_q8_k_avx2(w, y) };
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { crate::qmatmul_simd128::vec_dot_q5_k_q8_k(w, y) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     vec_dot_q5_k_q8_k_generic(w, y)
 }
 
@@ -401,6 +407,7 @@ unsafe fn vec_dot_q5_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
     hsum_float_8(acc) + summs
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn vec_dot_q5_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
     debug_assert_eq!(w.len(), y.len() * Q5_K_BYTES);
     // llama.cpp generic: 8 int32 lanes, `sums[l] += d * aux32[l]` per superblock.
@@ -476,6 +483,11 @@ fn vec_dot_q6_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
             return unsafe { vec_dot_q6_k_q8_k_avx2(w, y) };
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { crate::qmatmul_simd128::vec_dot_q6_k_q8_k(w, y) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     vec_dot_q6_k_q8_k_generic(w, y)
 }
 
@@ -611,6 +623,7 @@ unsafe fn vec_dot_q6_k_q8_k_avx2(w: &[u8], y: &[BlockQ8K]) -> f32 {
     _mm_cvtss_f32(res)
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn vec_dot_q6_k_q8_k_generic(w: &[u8], y: &[BlockQ8K]) -> f32 {
     debug_assert_eq!(w.len(), y.len() * Q6_K_BYTES);
     // llama.cpp generic Q6_K: 8 int32 lanes, float acc per lane, then sum.
@@ -778,6 +791,7 @@ fn repack_q4_k_8x8(bytes: &[u8], n_in: usize, n_out: usize) -> Vec<u8> {
 
 /// llama.cpp `ggml_gemv_q4_K_8x8_q8_K_generic` with AVX2-style per-superblock
 /// float accum (`iacc * (d * a.d)` once per QK_K, not once per 8-wide chunk).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut [f32]) {
     const KMASK1: u32 = 0x3f3f3f3f;
     const KMASK2: u32 = 0x0f0f0f0f;
@@ -908,7 +922,11 @@ pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
         // (see crate docs). Stay on GEMV.
         for t in 0..n_tokens {
             let yrow = &qrows[t * n_blocks..(t + 1) * n_blocks];
-            gemv_q4_k_8x8_q8_k(packed, yrow, w.n_out, &mut y[t * w.n_out..(t + 1) * w.n_out]);
+            let yout = &mut y[t * w.n_out..(t + 1) * w.n_out];
+            #[cfg(target_arch = "wasm32")]
+            crate::qmatmul_simd128::gemv_q4_k_8x8_q8_k(packed, yrow, w.n_out, yout);
+            #[cfg(not(target_arch = "wasm32"))]
+            gemv_q4_k_8x8_q8_k(packed, yrow, w.n_out, yout);
         }
         return;
     }

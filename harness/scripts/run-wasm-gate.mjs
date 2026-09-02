@@ -135,7 +135,7 @@ const receipt = {
   q4_lock: [...q4Lock],
   q4_lock_result: q4LockPass ? "pass" : "fail",
   q4_lock_note:
-    "empty-none / short-hello-none are the native AVX2 bit-exact pin vs q_llama. WASM-SIMD uses the portable kernels; AVX2-vs-WASM-SIMD is a later close. epsilon.json is not rewritten.",
+    "empty-none / short-hello-none are the native AVX2 bit-exact pin vs q_llama. SIMD128 kernels match native Q@K dots; remaining residual is softmax f32::exp (glibc vs WASM). Tight lock is not re-coupled while short-hello-none fails. epsilon.json is not rewritten.",
   q4_lock_failures: q4LockFailures,
   pending_excluded: budget.pending_excluded,
   failures: f32Failures,

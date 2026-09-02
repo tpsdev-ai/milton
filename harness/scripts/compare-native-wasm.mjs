@@ -60,7 +60,7 @@ const receipt = {
   max_abs: maxAbs,
   epsilon: eps.epsilon,
   epsilon_abs: eps.epsilon_abs,
-  note: "Same crate compiled native (AVX2 kernels when present) and wasm32 +simd128 (portable kernels). AVX2-vs-WASM-SIMD numerical close is a later chip if this receipt is fail solely from that residual.",
+  note: "Same crate compiled native (AVX2 kernels when present) and wasm32 +simd128. Q4_K/Q5_K/Q6_K and Q@K dots are bit-exact; first residual is softmax f32::exp (glibc expf vs WASM compiler-builtins). epsilon.json is not rewritten.",
   cases: rows,
 };
 

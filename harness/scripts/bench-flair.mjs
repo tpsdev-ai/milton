@@ -44,8 +44,8 @@ async function importHfe() {
   throw new Error(`import failed:\n${errors.join("\n")}`);
 }
 
-async function tryHfe() {
-  const attempt = { path: "harper-fabric-embeddings", ok: false };
+async function tryHfe(threads) {
+  const attempt = { path: "harper-fabric-embeddings", threads, ok: false };
   try {
     let hfe;
     try {
@@ -77,7 +77,7 @@ async function tryHfe() {
     await hfe.init({
       modelPath: paths.gguf,
       pooling: "mean",
-      threads: 1,
+      threads,
       contextSize: 2048,
       batchSize: 2048,
       ...(existsSync(addonPath) ? { addonPath } : {}),
@@ -150,16 +150,27 @@ const report = {
   status: "pending",
 };
 
-const hfe = await tryHfe();
+const osCpus = os.availableParallelism();
+const hfeMulti = await tryHfe(osCpus);
+const hfeSingle = await tryHfe(1);
 await tryHarper();
 
-if (hfe?.ok) {
+if (hfeMulti?.ok) {
   report.status = "ok";
   report.measured = "harper-fabric-embeddings raw API (same engine Flair registers; Harper facade not booted)";
-  report.cold_start_ms = hfe.cold_start_ms;
-  report.single = hfe.single;
-  report.batched = hfe.batched;
-  report.dims = hfe.dims;
+  report.cold_start_ms = hfeMulti.cold_start_ms;
+  report.single = hfeMulti.single;
+  report.batched = hfeMulti.batched;
+  report.dims = hfeMulti.dims;
+  report.threads = osCpus;
+  if (hfeSingle?.ok) {
+    report.single_thread = {
+      threads: 1,
+      cold_start_ms: hfeSingle.cold_start_ms,
+      single: hfeSingle.single,
+      batched: hfeSingle.batched,
+    };
+  }
 } else {
   report.status = "BLOCKED";
   report.measured = null;

@@ -79,6 +79,15 @@ const report = {
     bytes: packedBytes,
     mb: packedMb,
   },
+  // issue #23 addendum: SIMD code may grow the .wasm modestly; report delta vs #22, keep well under 1 MB.
+  vs_issue22: {
+    wasm_milton_bg_bytes_was: 629953,
+    wasm_milton_bg_bytes_now: wasmFiles.find((f) => f.name === "milton_bg.wasm")?.size ?? null,
+    wasm_delta_bytes:
+      (wasmFiles.find((f) => f.name === "milton_bg.wasm")?.size ?? 0) - 629953,
+    pack_mb_now: packedMb,
+    well_under_1mb: packedMb != null && packedMb < 1,
+  },
   assert: {
     zero_native_in_src: nativeInSrc.length === 0,
     zero_native_in_wasm: nativeInWasm.length === 0,
