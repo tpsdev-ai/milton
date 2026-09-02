@@ -1,0 +1,7 @@
+# Pinned builder toolchain. rust-version in crate/Cargo.toml is 1.83 (MSRV).
+# channel is exact: the committed wasm/milton_bg.wasm embeds
+# rustc 1.83.0 (90b35a623 2024-11-26). Do not float `stable`.
+[toolchain]
+channel = "1.83.0"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"
