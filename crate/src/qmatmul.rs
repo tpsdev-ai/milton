@@ -31,6 +31,11 @@
 //! once per tile and applies the same Q8_K + mul+add tree to every token
 //! in the tile. Same numeric path as the GEMV. Not the 4×8 FMA GEMM.
 //!
+//! Native Q4_K 8×8 is an AVX2 twin of the SIMD128 GEMV (`qmatmul_simd128`):
+//! the same i16-mul + horizontal-sum integer tree, then mul+add (not FMA).
+//! That is the #37 chip — so the bench's native column measures AVX2, not
+//! portable scalar (~6% of AVX2). Do not land `q4k_avx2`'s 4×8 FMA GEMM.
+//!
 //! After GEMV-only, the first tensor that is **not bit-exact** vs the
 //! llama eval-callback dump is `wqkv-0` (Q5_K MUL_MAT). There is no
 //! Q5_K REPACK/GEMV/GEMM in the pinned DSO (`tinyBLAS` rejects Q5_K;
@@ -345,6 +350,9 @@ unsafe fn q5k_avx2_chunk<const BIT0: i32, const BIT1: i32>(
 
 /// llama.cpp `ggml_vec_dot_q5_K_q8_K` AVX2 (`quants.c` ~1919), sequence-tiled.
 ///
+/// Precondition: `n_tile <= GEMM_TILE_TOKENS` — caller must clamp (`min`);
+/// the `debug_assert!` is compiled out in release.
+///
 /// Dispatch matches the pinned `libggml-cpu.so`: no Q5_K REPACK/GEMV/GEMM;
 /// `quantize_row_q8_K` + this `vec_dot`. DSO AVX2 is bit-exact on the
 /// `wqkv-0` eval-callback dump; generic is not (1.91e-6). Immediate
@@ -628,6 +636,8 @@ fn vec_dot_q6_k_q8_k_tile(
 /// `madd_epi16` of `cvtepi8_epi16` scales, `_mm256_fmadd_ps` of
 /// `broadcast_ss(d)` into 8-wide `acc` across superblocks, `hsum_float_8`
 /// pairwise order. Weight superblock unpacked once per tile.
+/// Precondition: `n_tile <= GEMM_TILE_TOKENS` — caller must clamp (`min`);
+/// the `debug_assert!` is compiled out in release.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn vec_dot_q6_k_q8_k_avx2_tile(
@@ -1008,6 +1018,221 @@ fn q4_kx8_iacc(qs: &[u8], ub: &[u8; 128], yb: &BlockQ8K) -> ([i32; 8], [i32; 8])
     (iacc, iacc_min)
 }
 
+/// Four horizontal sums of 8 i16 products (fits i32). Same total as SIMD128
+/// `hsum_i16x8` on each lane: pairwise `madd_epi16` with ones, then two
+/// `hadd_epi32`. `p0` lo/hi = two columns × a0; `p1` lo/hi = two columns × a1.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn hsum4_i16x8_ymm(
+    p0: std::arch::x86_64::__m256i,
+    p1: std::arch::x86_64::__m256i,
+) -> (i32, i32, i32, i32) {
+    use std::arch::x86_64::*;
+    let ones = _mm256_set1_epi16(1);
+    let r0 = _mm256_madd_epi16(p0, ones);
+    let r1 = _mm256_madd_epi16(p1, ones);
+    let h = _mm256_hadd_epi32(r0, r1);
+    let h2 = _mm256_hadd_epi32(h, h);
+    let lo = _mm256_castsi256_si128(h2);
+    let hi = _mm256_extracti128_si256::<1>(h2);
+    (
+        _mm_cvtsi128_si32(lo),
+        _mm_cvtsi128_si32(hi),
+        _mm_extract_epi32::<1>(lo),
+        _mm_extract_epi32::<1>(hi),
+    )
+}
+
+/// AVX2 integer products for one `block_q4_Kx8` × a tile of Q8_K rows.
+/// Twin of the SIMD128 tree: i16 mul of (nibble, q8) then hsum, then × scale.
+/// 2× v128 = one ymm (`_mm256_cvtepu8_epi16` + broadcast a0/a1), same
+/// discipline as #24. No float, no FMA — the caller scales with mul+add
+/// **outside** `target_feature`.
+///
+/// Precondition: `tn <= GEMM_TILE_TOKENS` — caller must clamp (`min`);
+/// the `debug_assert!` is compiled out in release.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn q4k_tile_iacc_avx2(
+    qs: *const u8,
+    ub: *const u8,
+    qrows: &[BlockQ8K],
+    t0: usize,
+    tn: usize,
+    n_blocks: usize,
+    l: usize,
+    iacc: &mut [[i32; 8]; GEMM_TILE_TOKENS],
+    iacc_min: &mut [[i32; 8]; GEMM_TILE_TOKENS],
+) {
+    use std::arch::x86_64::*;
+    debug_assert!(tn <= GEMM_TILE_TOKENS);
+    let m4 = _mm256_set1_epi16(0x000F);
+
+    // Hoist qs + scales once per superblock (k outer), then apply every token.
+    let mut v0 = [_mm256_setzero_si256(); 64];
+    let mut v1 = [_mm256_setzero_si256(); 64];
+    let mut s0a = [0i32; 64];
+    let mut s1a = [0i32; 64];
+    let mut s0b = [0i32; 64];
+    let mut s1b = [0i32; 64];
+    for k in 0..16 {
+        let scale_base = (k / 4) * 32;
+        for pair in 0..4 {
+            let idx = k * 4 + pair;
+            let j = pair * 2;
+            let packed = _mm_loadu_si128(qs.add(k * 64 + j * 8).cast());
+            let qs16 = _mm256_cvtepu8_epi16(packed);
+            v0[idx] = _mm256_and_si256(qs16, m4);
+            v1[idx] = _mm256_srli_epi16::<4>(qs16);
+            s0a[idx] = i32::from(*ub.add(scale_base + j));
+            s1a[idx] = i32::from(*ub.add(scale_base + 16 + j));
+            s0b[idx] = i32::from(*ub.add(scale_base + j + 1));
+            s1b[idx] = i32::from(*ub.add(scale_base + 16 + j + 1));
+        }
+    }
+
+    for ti in 0..tn {
+        let yb = &qrows[(t0 + ti) * n_blocks + l];
+        let y_qs = yb.qs.as_ptr();
+        for k in 0..16 {
+            let a_off = (k >> 2) * 64 + (k % 4) * 8;
+            let a0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(y_qs.add(a_off).cast()));
+            let a1 = _mm_cvtepi8_epi16(_mm_loadl_epi64(y_qs.add(a_off + 32).cast()));
+            let a0b = _mm256_broadcastsi128_si256(a0);
+            let a1b = _mm256_broadcastsi128_si256(a1);
+            for pair in 0..4 {
+                let idx = k * 4 + pair;
+                let j = pair * 2;
+                let p0 = _mm256_mullo_epi16(v0[idx], a0b);
+                let p1 = _mm256_mullo_epi16(v1[idx], a1b);
+                let (sum0a, sum0b, sum1a, sum1b) = hsum4_i16x8_ymm(p0, p1);
+                iacc[ti][j] += s0a[idx] * sum0a + s1a[idx] * sum1a;
+                iacc[ti][j + 1] += s0b[idx] * sum0b + s1b[idx] * sum1b;
+            }
+        }
+        for sb in 0..8 {
+            let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
+            let mins8 = _mm_loadl_epi64(ub.add(8 + sb * 16).cast());
+            let mins32 = _mm256_cvtepu8_epi32(mins8);
+            let prod = _mm256_mullo_epi32(mins32, _mm256_set1_epi32(bsum));
+            let mut tmp = [0i32; 8];
+            _mm256_storeu_si256(tmp.as_mut_ptr().cast(), prod);
+            for j in 0..8 {
+                iacc_min[ti][j] += tmp[j];
+            }
+        }
+    }
+}
+
+/// Mul+add scale of one Q4_K superblock. **No** `target_feature` — LLVM
+/// must not contract this to FMA (the live GEMV is mul+add; Q5_K DSO FMA
+/// is a different path and stays there). Native-only; WASM stays on the
+/// SIMD128 GEMM in `qmatmul_simd128`.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn q4k_scale_mul_add(
+    iacc: &[i32; 8],
+    iacc_min: &[i32; 8],
+    d: &[f32; 8],
+    dmin: &[f32; 8],
+    yd: f32,
+    sumf: &mut [f32; 8],
+    sum_minf: &mut [f32; 8],
+) {
+    for j in 0..8 {
+        let ds = d[j] * yd;
+        sumf[j] += iacc[j] as f32 * ds;
+        sum_minf[j] += iacc_min[j] as f32 * (dmin[j] * yd);
+    }
+}
+
+/// Column-group chunk for the AVX2 path: reuse each Q8_K superblock across
+/// this many 8-col groups before walking the next `l`. Not a tile size —
+/// `GEMM_TILE_TOKENS` stays the single tile definition.
+#[cfg(target_arch = "x86_64")]
+const Q4K_COL_GROUP_CHUNK: usize = 4;
+
+/// Sequence-tiled AVX2 Q4_K×Q8_K 8-col GEMM. Same integer products and
+/// mul+add tree as the SIMD128 / portable GEMV. Tile loop +
+/// `GEMM_TILE_TOKENS` unchanged. Column-group outer loop is chunked so
+/// Q8_K rows stay hot across groups (Kern #39). Float scale is
+/// [`q4k_scale_mul_add`] — outside `target_feature`.
+#[cfg(target_arch = "x86_64")]
+fn gemm_q4_k_8x8_q8_k_avx2(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    n_tokens: usize,
+    n_out: usize,
+    out: &mut [f32],
+) {
+    debug_assert!(n_tokens > 0);
+    let n_blocks = qrows.len() / n_tokens;
+    debug_assert_eq!(repack.len(), (n_out / 8) * n_blocks * Q4_KX8_BYTES);
+    debug_assert_eq!(out.len(), n_tokens * n_out);
+    let n_groups = n_out / 8;
+    for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
+        let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
+        for x0 in (0..n_groups).step_by(Q4K_COL_GROUP_CHUNK) {
+            let gn = (n_groups - x0).min(Q4K_COL_GROUP_CHUNK);
+            let mut sumf = [[[0.0f32; 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
+            let mut sum_minf = [[[0.0f32; 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
+            for l in 0..n_blocks {
+                for xi in 0..gn {
+                    let x = x0 + xi;
+                    let off = (x * n_blocks + l) * Q4_KX8_BYTES;
+                    let blk = &repack[off..off + Q4_KX8_BYTES];
+                    let mut d = [0.0f32; 8];
+                    let mut dmin = [0.0f32; 8];
+                    for j in 0..8 {
+                        d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
+                        dmin[j] = f16_to_f32(u16::from_le_bytes([
+                            blk[16 + j * 2],
+                            blk[16 + j * 2 + 1],
+                        ]));
+                    }
+                    let mut ub = [0u8; 128];
+                    unpack_q4_kx8_scales(&blk[32..128], &mut ub);
+                    let qs = blk[128..].as_ptr();
+                    let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+                    let mut iacc_min = [[0i32; 8]; GEMM_TILE_TOKENS];
+                    unsafe {
+                        q4k_tile_iacc_avx2(
+                            qs,
+                            ub.as_ptr(),
+                            qrows,
+                            t0,
+                            tn,
+                            n_blocks,
+                            l,
+                            &mut iacc,
+                            &mut iacc_min,
+                        );
+                    }
+                    for ti in 0..tn {
+                        q4k_scale_mul_add(
+                            &iacc[ti],
+                            &iacc_min[ti],
+                            &d,
+                            &dmin,
+                            qrows[(t0 + ti) * n_blocks + l].d,
+                            &mut sumf[ti][xi],
+                            &mut sum_minf[ti][xi],
+                        );
+                    }
+                }
+            }
+            for ti in 0..tn {
+                for xi in 0..gn {
+                    for j in 0..8 {
+                        out[(t0 + ti) * n_out + (x0 + xi) * 8 + j] =
+                            sumf[ti][xi][j] - sum_minf[ti][xi][j];
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Sequence-tiled Q4_K×Q8_K 8-col GEMM. Same integer products and mul+add
 /// tree as `gemv_q4_k_8x8_q8_k` (one token). Each `block_q4_Kx8` — scales
 /// **and** the 1024-byte `qs` payload — is read once per tile, then applied
@@ -1015,12 +1240,32 @@ fn q4_kx8_iacc(qs: &[u8], ub: &[u8; 128], yb: &BlockQ8K) -> ([i32; 8], [i32; 8])
 /// only hoisted the 128-byte scale header still re-read `qs` per token
 /// (~9% traffic save, ~1.00× wasm:bench).
 ///
-/// Scalar mul+add sits **outside** `target_feature(enable = "avx2")` so LLVM
+/// Native: AVX2 twin of the SIMD128 kernel when `avx2` is present. Scalar
+/// mul+add sits **outside** `target_feature(enable = "avx2")` so LLVM
 /// cannot contract it to FMA. Do not land the 4×8 FMA GEMM. i32 `iacc`
 /// adds are associative; the float mul+add still runs once per superblock
 /// after `iacc` is complete, same eval order as the GEMV.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn gemm_q4_k_8x8_q8_k(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    n_tokens: usize,
+    n_out: usize,
+    out: &mut [f32],
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            gemm_q4_k_8x8_q8_k_avx2(repack, qrows, n_tokens, n_out, out);
+            return;
+        }
+    }
+    gemm_q4_k_8x8_q8_k_scalar(repack, qrows, n_tokens, n_out, out);
+}
+
+/// Portable scalar Q4_K 8×8 GEMM (WASM fallback / AVX2-absent / identity).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn gemm_q4_k_8x8_q8_k_scalar(
     repack: &[u8],
     qrows: &[BlockQ8K],
     n_tokens: usize,
@@ -1634,6 +1879,79 @@ mod tests {
             assert_eq!(
                 ndiff, 0,
                 "tiled GEMM drifted from per-token GEMV {name} n={n_tok} max_abs={max_abs} ndiff={ndiff}"
+            );
+        }
+    }
+
+    /// AVX2 Q4_K twin must match the portable scalar integer tree + mul+add
+    /// (the SIMD128 / wasm:compare path). Not required to match per-token
+    /// GEMV if a future tile reshape changes order, but today's tree does.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_q4k_matches_scalar_integer_tree() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let gguf_path = root.join("harness/vendor/models/nomic-embed-text-v1.5.Q4_K_M.gguf");
+        if !gguf_path.exists() {
+            return;
+        }
+        let gguf = crate::gguf::GgufFile::open(&gguf_path).unwrap();
+        let cases = [
+            ("blk.0.attn_output.weight", 7usize),
+            ("blk.0.attn_output.weight", GEMM_TILE_TOKENS + 1),
+            ("blk.0.ffn_up.weight", 3),
+            ("blk.0.ffn_gate.weight", GEMM_TILE_TOKENS + 1),
+        ];
+        for (name, n_tok) in cases {
+            let info = gguf.tensor(name).unwrap();
+            if info.tensor_type != TensorType::Q4K {
+                continue;
+            }
+            let n_in = info.dimensions[0] as usize;
+            let n_out = info.dimensions[1] as usize;
+            let bytes = gguf.tensor_bytes(info).unwrap().to_vec();
+            let f32w = gguf.dequantize_tensor(name).unwrap();
+            let w = QuantMat::new(info.tensor_type, bytes, f32w, n_in, n_out);
+            let packed = w.q4k_8x8.as_ref().expect("Q4_K 8x8 repack");
+            let x: Vec<f32> = (0..n_tok * n_in)
+                .map(|i| ((i * 17) % 50) as f32 / 250.0 - 0.1)
+                .collect();
+            let n_blocks = n_in / QK_K;
+            let mut qrows = vec![
+                BlockQ8K {
+                    d: 0.0,
+                    qs: [0; QK_K],
+                    bsums: [0; QK_K / 16],
+                };
+                n_tok * n_blocks
+            ];
+            for t in 0..n_tok {
+                quantize_row_q8_k(
+                    &x[t * n_in..(t + 1) * n_in],
+                    &mut qrows[t * n_blocks..(t + 1) * n_blocks],
+                );
+            }
+            let mut y_avx = vec![0.0f32; n_tok * n_out];
+            let mut y_sca = vec![0.0f32; n_tok * n_out];
+            gemm_q4_k_8x8_q8_k_avx2(packed, &qrows, n_tok, n_out, &mut y_avx);
+            gemm_q4_k_8x8_q8_k_scalar(packed, &qrows, n_tok, n_out, &mut y_sca);
+            let mut ndiff = 0usize;
+            let mut max_abs = 0.0f32;
+            for i in 0..y_avx.len() {
+                let d = (y_avx[i] - y_sca[i]).abs();
+                if d > 0.0 {
+                    ndiff += 1;
+                }
+                max_abs = max_abs.max(d);
+            }
+            assert_eq!(
+                ndiff, 0,
+                "AVX2 Q4_K drifted from scalar {name} n={n_tok} max_abs={max_abs} ndiff={ndiff}"
             );
         }
     }
