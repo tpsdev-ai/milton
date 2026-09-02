@@ -570,8 +570,9 @@ pub fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut
 }
 
 /// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. Same integer products and
-/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Each `block_q4_Kx8` is unpacked
-/// once per tile.
+/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Each `block_q4_Kx8` — scales and
+/// the 1024-byte `qs` payload — is read once per tile (`k` outer, tokens
+/// inner). Do not switch this to FMA.
 pub fn gemm_q4_k_8x8_q8_k(
     repack: &[u8],
     qrows: &[BlockQ8K],
@@ -628,13 +629,40 @@ pub fn gemm_q4_k_8x8_q8_k(
                     ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
                 }
 
-                for ti in 0..tn {
-                    let yb = &qrows[(t0 + ti) * n_blocks + l];
-                    let mut iacc = [0i32; 8];
+                // Read qs once per superblock (k outer), apply to every token.
+                // Same integer products as the per-token GEMV; float mul+add
+                // still runs once per superblock after iacc is complete.
+                let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+                for k in 0..16 {
+                    let scale_base = (k / 4) * 32;
+                    let mut v0_lo = [m4; 4];
+                    let mut v0_hi = [m4; 4];
+                    let mut v1_lo = [m4; 4];
+                    let mut v1_hi = [m4; 4];
+                    let mut s0a = [0i32; 4];
+                    let mut s1a = [0i32; 4];
+                    let mut s0b = [0i32; 4];
+                    let mut s1b = [0i32; 4];
                     unsafe {
-                        for k in 0..16 {
-                            let scale_base = (k / 4) * 32;
-                            let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                        for pair in 0..4 {
+                            let j = pair * 2;
+                            let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
+                            let qs_lo = u16x8_extend_low_u8x16(packed);
+                            let qs_hi = u16x8_extend_high_u8x16(packed);
+                            v0_lo[pair] = v128_and(qs_lo, m4);
+                            v0_hi[pair] = v128_and(qs_hi, m4);
+                            v1_lo[pair] = u16x8_shr(qs_lo, 4);
+                            v1_hi[pair] = u16x8_shr(qs_hi, 4);
+                            s0a[pair] = i32::from(ub[scale_base + j]);
+                            s1a[pair] = i32::from(ub[scale_base + 16 + j]);
+                            s0b[pair] = i32::from(ub[scale_base + j + 1]);
+                            s1b[pair] = i32::from(ub[scale_base + 16 + j + 1]);
+                        }
+                    }
+                    for ti in 0..tn {
+                        let yb = &qrows[(t0 + ti) * n_blocks + l];
+                        let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                        unsafe {
                             let a0 = i16x8_extend_low_i8x16(u64x2(
                                 ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
                                 0,
@@ -643,29 +671,20 @@ pub fn gemm_q4_k_8x8_q8_k(
                                 ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
                                 0,
                             ));
-                            // 2 columns at a time (16 qs bytes).
                             for pair in 0..4 {
                                 let j = pair * 2;
-                                let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
-                                let qs_lo = u16x8_extend_low_u8x16(packed);
-                                let qs_hi = u16x8_extend_high_u8x16(packed);
-                                let v0_lo = v128_and(qs_lo, m4);
-                                let v0_hi = v128_and(qs_hi, m4);
-                                let v1_lo = u16x8_shr(qs_lo, 4);
-                                let v1_hi = u16x8_shr(qs_hi, 4);
-                                let s0a = i32::from(ub[scale_base + j]);
-                                let s1a = i32::from(ub[scale_base + 16 + j]);
-                                let s0b = i32::from(ub[scale_base + j + 1]);
-                                let s1b = i32::from(ub[scale_base + 16 + j + 1]);
-                                let sum0a = hsum_i16x8(i16x8_mul(v0_lo, a0));
-                                let sum1a = hsum_i16x8(i16x8_mul(v1_lo, a1));
-                                let sum0b = hsum_i16x8(i16x8_mul(v0_hi, a0));
-                                let sum1b = hsum_i16x8(i16x8_mul(v1_hi, a1));
-                                iacc[j] += s0a * sum0a + s1a * sum1a;
-                                iacc[j + 1] += s0b * sum0b + s1b * sum1b;
+                                let sum0a = hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
+                                let sum1a = hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
+                                let sum0b = hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
+                                let sum1b = hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
+                                iacc[ti][j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
+                                iacc[ti][j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
                             }
                         }
                     }
+                }
+                for ti in 0..tn {
+                    let yb = &qrows[(t0 + ti) * n_blocks + l];
                     let mut iacc_min = [0i32; 8];
                     for sb in 0..8 {
                         let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
@@ -688,7 +707,7 @@ pub fn gemm_q4_k_8x8_q8_k(
                     }
                     for j in 0..8 {
                         let ds = d[j] * yb.d;
-                        sumf[ti][j] += iacc[j] as f32 * ds;
+                        sumf[ti][j] += iacc[ti][j] as f32 * ds;
                         sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
                     }
                 }

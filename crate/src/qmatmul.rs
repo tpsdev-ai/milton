@@ -976,7 +976,8 @@ fn unpack_q4_kx8_scales(scales: &[u8], ub: &mut [u8; 128]) {
 
 /// Integer products for one Q8_K superblock against an unpacked `block_q4_Kx8`.
 /// Same eval order as the live GEMV (`k` outer, `j` columns, `i` 8-wide).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Kept as the one-token identity of the tiled qs-hoist; embed path inlines it.
+#[allow(dead_code)]
 fn q4_kx8_iacc(qs: &[u8], ub: &[u8; 128], yb: &BlockQ8K) -> ([i32; 8], [i32; 8]) {
     let mut iacc = [0i32; 8];
     for k in 0..16 {
@@ -1008,11 +1009,16 @@ fn q4_kx8_iacc(qs: &[u8], ub: &[u8; 128], yb: &BlockQ8K) -> ([i32; 8], [i32; 8])
 }
 
 /// Sequence-tiled Q4_K×Q8_K 8-col GEMM. Same integer products and mul+add
-/// tree as `gemv_q4_k_8x8_q8_k` (one token). Each `block_q4_Kx8` is unpacked
-/// once per tile, then applied to every token in the tile.
+/// tree as `gemv_q4_k_8x8_q8_k` (one token). Each `block_q4_Kx8` — scales
+/// **and** the 1024-byte `qs` payload — is read once per tile, then applied
+/// to every token. Inverting `k` over `ti` is the GEMM: a first cut that
+/// only hoisted the 128-byte scale header still re-read `qs` per token
+/// (~9% traffic save, ~1.00× wasm:bench).
 ///
 /// Scalar mul+add sits **outside** `target_feature(enable = "avx2")` so LLVM
-/// cannot contract it to FMA. Do not land the 4×8 FMA GEMM.
+/// cannot contract it to FMA. Do not land the 4×8 FMA GEMM. i32 `iacc`
+/// adds are associative; the float mul+add still runs once per superblock
+/// after `iacc` is complete, same eval order as the GEMV.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn gemm_q4_k_8x8_q8_k(
     repack: &[u8],
@@ -1045,9 +1051,45 @@ fn gemm_q4_k_8x8_q8_k(
                 let mut ub = [0u8; 128];
                 unpack_q4_kx8_scales(&blk[32..128], &mut ub);
                 let qs = &blk[128..];
+                let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+                for k in 0..16 {
+                    let scale_base = (k / 4) * 32;
+                    let mut s0 = [0i32; 8];
+                    let mut s1 = [0i32; 8];
+                    let mut v0 = [[0i32; 8]; 8];
+                    let mut v1 = [[0i32; 8]; 8];
+                    for j in 0..8 {
+                        s0[j] = i32::from(ub[scale_base + j]);
+                        s1[j] = i32::from(ub[scale_base + 16 + j]);
+                        for i in 0..8 {
+                            let qbyte = qs[k * 64 + j * 8 + i];
+                            v0[j][i] = i32::from(qbyte & 0x0f);
+                            v1[j][i] = i32::from(qbyte >> 4);
+                        }
+                    }
+                    for ti in 0..tn {
+                        let yb = &qrows[(t0 + ti) * n_blocks + l];
+                        for j in 0..8 {
+                            let mut sumi = 0i32;
+                            for i in 0..8 {
+                                let a_off = (k >> 2) * 64 + (k % 4) * 8 + i;
+                                let a0 = i32::from(yb.qs[a_off]);
+                                let a1 = i32::from(yb.qs[a_off + 32]);
+                                sumi += v0[j][i] * a0 * s0[j] + v1[j][i] * a1 * s1[j];
+                            }
+                            iacc[ti][j] += sumi;
+                        }
+                    }
+                }
                 for ti in 0..tn {
                     let yb = &qrows[(t0 + ti) * n_blocks + l];
-                    let (iacc, iacc_min) = q4_kx8_iacc(qs, &ub, yb);
+                    let mut iacc_min = [0i32; 8];
+                    for sb in 0..8 {
+                        let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
+                        for j in 0..8 {
+                            iacc_min[j] += i32::from(ub[8 + sb * 16 + j]) * bsum;
+                        }
+                    }
                     for j in 0..8 {
                         // Stay on mul+add. Pin dump kqv_out MUL_MAT is AVX2
                         // `_mm256_fmadd_ps(iacc_f32, d*yd, acc)` and is BIT_EXACT
@@ -1057,7 +1099,7 @@ fn gemm_q4_k_8x8_q8_k(
                         // cos_dist 0 → 0.00912. Same class as dump-kq / 4×8 Q@K.
                         // Do not land FMA GEMV. Do not land 4x8 GEMM.
                         let ds = d[j] * yb.d;
-                        sumf[ti][j] += iacc[j] as f32 * ds;
+                        sumf[ti][j] += iacc[ti][j] as f32 * ds;
                         sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
                     }
                 }
