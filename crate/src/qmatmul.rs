@@ -1185,10 +1185,8 @@ fn gemm_q4_k_8x8_q8_k_avx2(
                     let mut dmin = [0.0f32; 8];
                     for j in 0..8 {
                         d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
-                        dmin[j] = f16_to_f32(u16::from_le_bytes([
-                            blk[16 + j * 2],
-                            blk[16 + j * 2 + 1],
-                        ]));
+                        dmin[j] =
+                            f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
                     }
                     let mut ub = [0u8; 128];
                     unpack_q4_kx8_scales(&blk[32..128], &mut ub);
@@ -1784,15 +1782,9 @@ mod tests {
             for o in 0..w.n_out {
                 let col = &w.bytes[o * cb..(o + 1) * cb];
                 match w.ty {
-                    TensorType::Q4K => {
-                        vec_dot_q4_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
-                    }
-                    TensorType::Q5K => {
-                        vec_dot_q5_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
-                    }
-                    TensorType::Q6K => {
-                        vec_dot_q6_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
-                    }
+                    TensorType::Q4K => vec_dot_q4_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one),
+                    TensorType::Q5K => vec_dot_q5_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one),
+                    TensorType::Q6K => vec_dot_q6_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one),
                     _ => unreachable!(),
                 }
                 y_gemv[t * w.n_out + o] = col_one[0];
@@ -1881,6 +1873,59 @@ mod tests {
                 "tiled GEMM drifted from per-token GEMV {name} n={n_tok} max_abs={max_abs} ndiff={ndiff}"
             );
         }
+    }
+
+    /// Hoisted scale (once per 32-element group) + column-parallel products
+    /// must match the live GEMV integer tree. Algorithm identity for the
+    /// SIMD128 #42 rewrite; no GGUF required.
+    #[test]
+    fn q4k_hoisted_scale_column_parallel_matches_iacc() {
+        let mut qs = [0u8; 1024];
+        let mut ub = [0u8; 128];
+        for i in 0..1024 {
+            qs[i] = ((i * 17 + 3) % 251) as u8;
+        }
+        for i in 0..128 {
+            ub[i] = ((i * 13 + 5) % 63) as u8;
+        }
+        let mut yb = BlockQ8K {
+            d: 0.25,
+            qs: [0; QK_K],
+            bsums: [0; QK_K / 16],
+        };
+        for i in 0..QK_K {
+            yb.qs[i] = ((i * 9) % 127) as i8 - 63;
+        }
+        for i in 0..QK_K / 16 {
+            yb.bsums[i] = (i as i16) - 8;
+        }
+        let (ref_iacc, ref_min) = q4_kx8_iacc(&qs, &ub, &yb);
+        let mut got = [0i32; 8];
+        for batch in 0..4 {
+            let mut acc0 = [0i32; 8];
+            let mut acc1 = [0i32; 8];
+            for kk in 0..4 {
+                let k = batch * 4 + kk;
+                for j in 0..8 {
+                    for i in 0..8 {
+                        let qbyte = qs[k * 64 + j * 8 + i];
+                        let a_off = (k >> 2) * 64 + (k % 4) * 8 + i;
+                        acc0[j] += i32::from(qbyte & 0x0f) * i32::from(yb.qs[a_off]);
+                        acc1[j] += i32::from(qbyte >> 4) * i32::from(yb.qs[a_off + 32]);
+                    }
+                }
+            }
+            let scale_base = batch * 32;
+            for j in 0..8 {
+                got[j] += i32::from(ub[scale_base + j]) * acc0[j]
+                    + i32::from(ub[scale_base + 16 + j]) * acc1[j];
+            }
+        }
+        assert_eq!(
+            got, ref_iacc,
+            "hoisted integer tree drifted from q4_kx8_iacc"
+        );
+        assert_eq!(ref_min.len(), 8);
     }
 
     /// AVX2 Q4_K twin must match the portable scalar integer tree + mul+add
