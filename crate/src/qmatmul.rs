@@ -1488,6 +1488,73 @@ mod tests {
         );
     }
 
+    fn identity_tiled_vs_gemv(
+        w: &QuantMat,
+        qrows: &[BlockQ8K],
+        n_tok: usize,
+        y_tile: &mut [f32],
+        y_gemv: &mut [f32],
+    ) {
+        let n_blocks = qrows.len() / n_tok;
+        if let Some(ref packed) = w.q4k_8x8 {
+            gemm_q4_k_8x8_q8_k(packed, qrows, n_tok, w.n_out, y_tile);
+            for t in 0..n_tok {
+                gemm_q4_k_8x8_q8_k(
+                    packed,
+                    &qrows[t * n_blocks..(t + 1) * n_blocks],
+                    1,
+                    w.n_out,
+                    &mut y_gemv[t * w.n_out..(t + 1) * w.n_out],
+                );
+            }
+            return;
+        }
+        let cb = col_bytes(w.ty, w.n_in);
+        let mut col_tile = [0.0f32; GEMM_TILE_TOKENS];
+        let mut col_one = [0.0f32; 1];
+        for t0 in (0..n_tok).step_by(GEMM_TILE_TOKENS) {
+            let tn = (n_tok - t0).min(GEMM_TILE_TOKENS);
+            let tile_rows = &qrows[t0 * n_blocks..(t0 + tn) * n_blocks];
+            for o in 0..w.n_out {
+                let col = &w.bytes[o * cb..(o + 1) * cb];
+                match w.ty {
+                    TensorType::Q4K => {
+                        vec_dot_q4_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_tile)
+                    }
+                    TensorType::Q5K => {
+                        vec_dot_q5_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_tile)
+                    }
+                    TensorType::Q6K => {
+                        vec_dot_q6_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_tile)
+                    }
+                    _ => panic!("identity: unexpected type {:?}", w.ty),
+                }
+                for ti in 0..tn {
+                    y_tile[(t0 + ti) * w.n_out + o] = col_tile[ti];
+                }
+            }
+        }
+        for t in 0..n_tok {
+            let row = &qrows[t * n_blocks..(t + 1) * n_blocks];
+            for o in 0..w.n_out {
+                let col = &w.bytes[o * cb..(o + 1) * cb];
+                match w.ty {
+                    TensorType::Q4K => {
+                        vec_dot_q4_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
+                    }
+                    TensorType::Q5K => {
+                        vec_dot_q5_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
+                    }
+                    TensorType::Q6K => {
+                        vec_dot_q6_k_q8_k_tile(col, row, 1, n_blocks, &mut col_one)
+                    }
+                    _ => unreachable!(),
+                }
+                y_gemv[t * w.n_out + o] = col_one[0];
+            }
+        }
+    }
+
     /// Tiled GEMM must be bit-identical to per-token GEMV on the same
     /// Q8_K rows (n=1 wrapper vs n>1 tile, including a tail past TILE).
     #[test]
@@ -1513,8 +1580,9 @@ mod tests {
             ("blk.0.ffn_down.weight", 5),
             ("blk.0.ffn_up.weight", GEMM_TILE_TOKENS + 1),
         ];
-        std::env::set_var("MILTON_Q8K", "1");
-        std::env::set_var("MILTON_REPACK", "1");
+        // Call the tiled kernels directly. Other tests toggle MILTON_Q8K /
+        // MILTON_REPACK; going through matmul_ggml races under `cargo test`
+        // (CI saw ndiff=5376 / max_abs≈2e-3 on attn_output — Q8_K vs f32).
         for (name, n_tok) in cases {
             let info = gguf.tensor(name).unwrap();
             let n_in = info.dimensions[0] as usize;
@@ -1532,17 +1600,24 @@ mod tests {
             let x: Vec<f32> = (0..n_tok * n_in)
                 .map(|i| ((i * 17) % 50) as f32 / 250.0 - 0.1)
                 .collect();
-            let mut y_tile = vec![0.0f32; n_tok * n_out];
-            matmul_ggml(&x, &w, n_tok, &mut y_tile);
-            let mut y_gemv = vec![0.0f32; n_tok * n_out];
+            let n_blocks = n_in / QK_K;
+            let mut qrows = vec![
+                BlockQ8K {
+                    d: 0.0,
+                    qs: [0; QK_K],
+                    bsums: [0; QK_K / 16],
+                };
+                n_tok * n_blocks
+            ];
             for t in 0..n_tok {
-                matmul_ggml(
+                quantize_row_q8_k(
                     &x[t * n_in..(t + 1) * n_in],
-                    &w,
-                    1,
-                    &mut y_gemv[t * n_out..(t + 1) * n_out],
+                    &mut qrows[t * n_blocks..(t + 1) * n_blocks],
                 );
             }
+            let mut y_tile = vec![0.0f32; n_tok * n_out];
+            let mut y_gemv = vec![0.0f32; n_tok * n_out];
+            identity_tiled_vs_gemv(&w, &qrows, n_tok, &mut y_tile, &mut y_gemv);
             let mut max_abs = 0.0f32;
             let mut ndiff = 0usize;
             for i in 0..y_tile.len() {
