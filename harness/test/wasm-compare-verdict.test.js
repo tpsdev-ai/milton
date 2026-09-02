@@ -9,15 +9,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_PATH = join(HERE, "..", "expected.json");
 
 describe("wasm-compare two-way expected-outcome (flair#1468 shape)", () => {
-  it("committed expected.json says fail and names the softmax residual, not RoPE/#27", () => {
+  it("committed expected.json says pass after shared RoPE sin/cos (#27)", () => {
     const doc = loadExpected(readFileSync(EXPECTED_PATH, "utf8"), EXPECTED_PATH);
-    assert.equal(doc.expected, "fail");
-    assert.match(doc.reason, /softmax/i);
-    assert.match(doc.reason, /expf|compiler-builtins/i);
-    assert.doesNotMatch(doc.reason, /RoPE sinf is the live residual/i);
+    assert.equal(doc.expected, "pass");
+    assert.match(doc.reason, /sin\/cos|RoPE/i);
+    assert.match(doc.reason, /bit-identical/i);
+    assert.doesNotMatch(doc.reason, /softmax glibc/i);
+    assert.doesNotMatch(doc.reason, /blocked on/i);
     assert.ok(Array.isArray(doc.blocked_on));
-    assert.ok(doc.blocked_on.includes(25));
-    assert.ok(doc.blocked_on.includes(26));
+    assert.equal(doc.blocked_on.length, 0);
   });
 
   it("expected fail + observed fail is GREEN", () => {

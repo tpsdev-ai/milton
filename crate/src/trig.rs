@@ -165,12 +165,14 @@ pub fn sincosf_shared(x: f32) -> (f32, f32) {
 
 /// Shared f32 `sin`. Same kernel as `sincosf_shared`.
 #[inline]
+#[allow(dead_code)] // crate tests; embed path uses sincosf_inplace
 pub fn sinf_shared(x: f32) -> f32 {
     sincosf_shared(x).0
 }
 
 /// Shared f32 `cos`. Same kernel as `sincosf_shared`.
 #[inline]
+#[allow(dead_code)] // crate tests; embed path uses sincosf_inplace
 pub fn cosf_shared(x: f32) -> f32 {
     sincosf_shared(x).1
 }

@@ -1,7 +1,7 @@
 {
   "schema": "milton.wasm-compare.expected/1",
-  "expected": "fail",
-  "reason": "softmax glibc expf vs WASM compiler-builtins. On #24 (0cb39be) max_cos_dist ~0.0105. Blocked on unmerged #25/#26 (shared permissive vectorized exp). Not RoPE sinf / #27 yet.",
-  "blocked_on": [25, 26],
-  "note": "Two-way expected-outcome (flair#1468 shape). This lane is RED only when the observed wasm:compare result differs from `expected` in either direction — an unexpected PASS is red and means flip `expected` to pass in that same PR. When #26 merges, rebase this file and update `reason` to RoPE sinf / blocked on #27 if that is then the residual. When #27 lands, that PR flips `expected` to pass."
+  "expected": "pass",
+  "reason": "native-Milton vs WASM-Milton are bit-identical: shared permissive exp (#26) and shared permissive sin/cos for RoPE (#27). Softmax / silu / V-mix / RoPE use the same mul+add kernels on both backends. Tight 1e-6/1e-5 compare is the lock (n=18 failed=0, max_abs=0).",
+  "blocked_on": [],
+  "note": "Two-way expected-outcome (flair#1468 shape). This lane is RED only when the observed wasm:compare result differs from `expected` in either direction — an unexpected FAIL is a regression. An unexpected PASS is red if this file still says fail."
 }
