@@ -114,6 +114,7 @@ harness/goldens/pin.json       Q4_K_M GGUF digest + llama.cpp commit/digest
 harness/goldens/pin-f16.json   F16 GGUF digest + llama.cpp commit
 harness/goldens/epsilon.json   Q4-vs-Q4 run-to-run floor (not the F32 gate)
 harness/goldens/controls.json  CLS-pooled must-fail fixture
+harness/profile/               measurement artifacts (stage-profile.json + tables.md); not goldens
 harness/lib/                   gate, metrics, prefixes, receipts, reference runner
 harness/scripts/               setup / generate / derive / gate / bench
 harness/test/                  must-fail + unit tests (node:test)
