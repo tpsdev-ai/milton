@@ -204,8 +204,13 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
                 let x1 = x[base + i + half];
                 let cos_t = cache[2 * i];
                 let sin_t = cache[2 * i + 1];
-                x[base + i] = fmaf32(x0, cos_t, -(x1 * sin_t));
-                x[base + i + half] = fmaf32(x0, sin_t, x1 * cos_t);
+                // Mul+add, not FMA. Native `fmaf32` is glibc/hardware FMA;
+                // WASM `fmaf32_soft` is not bit-identical on this apply
+                // (issue #25 Qcur-0/Kcur-0). Remaining native-vs-WASM split
+                // after this is glibc `sinf` vs WASM compiler-builtins (1 ULP
+                // at t=6, i=14) — not this polynomial.
+                x[base + i] = x0 * cos_t + -(x1 * sin_t);
+                x[base + i + half] = x0 * sin_t + x1 * cos_t;
             }
         }
     }

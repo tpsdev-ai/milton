@@ -49,7 +49,9 @@ fn ldexp_n(u: f32, n: i32) -> f32 {
 }
 
 /// Shared f32 `exp`. Mul+add Horner, magic rint, bit-ldexp. Not libm.
-#[inline(always)]
+/// `inline(never)` so a small softmax loop cannot be auto-vectorized into a
+/// different tree than the explicit SIMD kernels (native-vs-WASM split).
+#[inline(never)]
 pub fn expf_shared(x: f32) -> f32 {
     if x.is_nan() {
         return x;
