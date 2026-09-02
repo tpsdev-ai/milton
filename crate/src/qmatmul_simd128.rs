@@ -91,14 +91,13 @@ fn hsum_i32x4(v: v128) -> i32 {
         + i32x4_extract_lane::<3>(v)
 }
 
-/// Horizontal sum of 8 i16 products (fits i32). Same as #40 — extend+add,
-/// not `i32x4.dot` (NEON lowers that to smull/smull2/addp).
+/// Pair-sum 8 i16 products into 4 i32 lanes and add. Same total as
+/// `hsum_i16x8`. x86: `pmaddwd`+`paddd` (2 ops). NEON: `smull`+`smull2`
+/// +`addp`+`add` (4 ops, wash vs hsum). Used with the #40 per-k hoist
+/// so NEON does not also pay a 16 KiB unpack store.
 #[inline(always)]
-fn hsum_i16x8(v: v128) -> i32 {
-    hsum_i32x4(i32x4_add(
-        i32x4_extend_low_i16x8(v),
-        i32x4_extend_high_i16x8(v),
-    ))
+fn acc_sum8(prod: v128, acc: &mut v128) {
+    *acc = i32x4_add(*acc, i32x4_dot_i16x8(prod, i16x8_splat(1)));
 }
 
 /// Signed i8×i8 adjacent pair-add → 8 i16. Sat never fires for Q6_K
@@ -419,12 +418,78 @@ pub fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut
     gemm_q4_k_8x8_q8_k(repack, y, 1, n_out, out);
 }
 
+/// Same chunk as native AVX2 — not a tile size; `GEMM_TILE_TOKENS` stays
+/// the single tile definition. Q8_K row reuse across column groups.
+const Q4K_COL_GROUP_CHUNK: usize = 4;
+
+/// Scales / d / dmin for one `block_q4_Kx8`. qs stays on the repack
+/// pointer — per-k stripe loads, no 16 KiB nibble store.
+#[derive(Clone, Copy)]
+struct Q4kHeader {
+    d: [f32; 8],
+    dmin: [f32; 8],
+    ub: [u8; 128],
+}
+
+impl Q4kHeader {
+    fn from_block(blk: &[u8]) -> Self {
+        const KMASK1: u32 = 0x3f3f3f3f;
+        const KMASK2: u32 = 0x0f0f0f0f;
+        const KMASK3: u32 = 0x03030303;
+        debug_assert_eq!(blk.len(), Q4_KX8_BYTES);
+        let mut d = [0.0f32; 8];
+        let mut dmin = [0.0f32; 8];
+        for j in 0..8 {
+            d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
+            dmin[j] = f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
+        }
+        let scales = &blk[32..128];
+        let mut utmp = [0u32; 32];
+        for sb in 0..8 {
+            let base = sb * 12;
+            utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
+            utmp[sb * 4 + 1] = u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
+            utmp[sb * 4 + 2] = u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
+            utmp[sb * 4 + 3] =
+                ((utmp[sb * 4 + 2] >> 4) & KMASK2) | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
+            let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
+            utmp[sb * 4 + 1] = (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
+            utmp[sb * 4 + 2] = uaux_0;
+            utmp[sb * 4] &= KMASK1;
+        }
+        let mut ub = [0u8; 128];
+        for i in 0..32 {
+            ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
+        }
+        Self { d, dmin, ub }
+    }
+}
+
+/// One k-stripe: 4 pair-loads, 2 columns × 8 nibbles each. In-bounds:
+/// `k*64 + 6*8 ≤ 15*64 + 48 = 1008`, +16 = 1024.
+#[inline(always)]
+unsafe fn unpack_q4k_stripe(qs: *const u8, k: usize, m4: v128) -> [[v128; 4]; 4] {
+    let mut v0_lo = [m4; 4];
+    let mut v0_hi = [m4; 4];
+    let mut v1_lo = [m4; 4];
+    let mut v1_hi = [m4; 4];
+    for pair in 0..4 {
+        let packed = load16(qs.add(k * 64 + pair * 16));
+        let qs_lo = u16x8_extend_low_u8x16(packed);
+        let qs_hi = u16x8_extend_high_u8x16(packed);
+        v0_lo[pair] = v128_and(qs_lo, m4);
+        v0_hi[pair] = v128_and(qs_hi, m4);
+        v1_lo[pair] = u16x8_shr(qs_lo, 4);
+        v1_hi[pair] = u16x8_shr(qs_hi, 4);
+    }
+    [v0_lo, v0_hi, v1_lo, v1_hi]
+}
+
 /// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. Same integer products and
-/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Each `block_q4_Kx8` — scales and
-/// the 1024-byte `qs` payload — is read once per tile (`k` outer, tokens
-/// inner). Stripe loop matches #40 (no 4 KiB unpack store). i32 scale is
-/// applied once per 32-element group after four unscaled `hsum_i16x8`
-/// stripes. Do not switch this to FMA.
+/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Per-k hoist (#40 shape, small
+/// locals). `acc_sum8` (`i32x4.dot` + add) instead of `hsum_i16x8`. i32
+/// scale once per 32-element group. Column-group chunk reuses each Q8_K
+/// row. Do not switch this to FMA.
 pub fn gemm_q4_k_8x8_q8_k(
     repack: &[u8],
     qrows: &[BlockQ8K],
@@ -432,9 +497,6 @@ pub fn gemm_q4_k_8x8_q8_k(
     n_out: usize,
     out: &mut [f32],
 ) {
-    const KMASK1: u32 = 0x3f3f3f3f;
-    const KMASK2: u32 = 0x0f0f0f0f;
-    const KMASK3: u32 = 0x03030303;
     debug_assert!(n_tokens > 0);
     let n_blocks = qrows.len() / n_tokens;
     debug_assert_eq!(repack.len(), (n_out / 8) * n_blocks * Q4_KX8_BYTES);
@@ -444,69 +506,35 @@ pub fn gemm_q4_k_8x8_q8_k(
 
     for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
         let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
-        for x in 0..n_groups {
-            let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
-            let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+        for x0 in (0..n_groups).step_by(Q4K_COL_GROUP_CHUNK) {
+            let gn = (n_groups - x0).min(Q4K_COL_GROUP_CHUNK);
+            let mut sumf = [[[0.0f32; 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
+            let mut sum_minf = [[[0.0f32; 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
             for l in 0..n_blocks {
-                let off = (x * n_blocks + l) * Q4_KX8_BYTES;
-                let blk = &repack[off..off + Q4_KX8_BYTES];
-                let mut d = [0.0f32; 8];
-                let mut dmin = [0.0f32; 8];
-                for j in 0..8 {
-                    d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
-                    dmin[j] =
-                        f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
-                }
-                let scales = &blk[32..128];
-                let qs = &blk[128..];
-
-                let mut utmp = [0u32; 32];
-                for sb in 0..8 {
-                    let base = sb * 12;
-                    utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
-                    utmp[sb * 4 + 1] =
-                        u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
-                    utmp[sb * 4 + 2] =
-                        u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
-                    utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & KMASK2)
-                        | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
-                    let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
-                    utmp[sb * 4 + 1] =
-                        (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
-                    utmp[sb * 4 + 2] = uaux_0;
-                    utmp[sb * 4] &= KMASK1;
-                }
-                let mut ub = [0u8; 128];
-                for i in 0..32 {
-                    ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
+                let mut hdr = [Q4kHeader {
+                    d: [0.0; 8],
+                    dmin: [0.0; 8],
+                    ub: [0; 128],
+                }; Q4K_COL_GROUP_CHUNK];
+                let mut qs_ptr = [core::ptr::null(); Q4K_COL_GROUP_CHUNK];
+                for xi in 0..gn {
+                    let x = x0 + xi;
+                    let off = (x * n_blocks + l) * Q4_KX8_BYTES;
+                    let blk = &repack[off..off + Q4_KX8_BYTES];
+                    hdr[xi] = Q4kHeader::from_block(blk);
+                    qs_ptr[xi] = blk[128..].as_ptr();
                 }
 
-                // k-outer, tokens-inner (same as #40). Four stripes accumulate
-                // unscaled i16 sums; one i32 scale-mul per 32-element group.
-                // v0 (low nibble) and v1 (high nibble / q8+32) have different
-                // scale rows — keep them on separate accs.
-                let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+                let mut iacc = [[[0i32; 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
                 for batch in 0..4 {
-                    let mut acc0 = [[0i32; 8]; GEMM_TILE_TOKENS];
-                    let mut acc1 = [[0i32; 8]; GEMM_TILE_TOKENS];
+                    let mut acc0 = [[[i32x4_splat(0); 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
+                    let mut acc1 = [[[i32x4_splat(0); 8]; Q4K_COL_GROUP_CHUNK]; GEMM_TILE_TOKENS];
                     for kk in 0..4 {
                         let k = batch * 4 + kk;
-                        let mut v0_lo = [m4; 4];
-                        let mut v0_hi = [m4; 4];
-                        let mut v1_lo = [m4; 4];
-                        let mut v1_hi = [m4; 4];
+                        let mut stripe = [[[m4; 4]; 4]; Q4K_COL_GROUP_CHUNK];
                         unsafe {
-                            for pair in 0..4 {
-                                let j = pair * 2;
-                                // 16 bytes = 2 columns × 8 packed nibbles.
-                                // k*64 + j*8 ≤ 15*64 + 48 = 1008, +16 = 1024.
-                                let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
-                                let qs_lo = u16x8_extend_low_u8x16(packed);
-                                let qs_hi = u16x8_extend_high_u8x16(packed);
-                                v0_lo[pair] = v128_and(qs_lo, m4);
-                                v0_hi[pair] = v128_and(qs_hi, m4);
-                                v1_lo[pair] = u16x8_shr(qs_lo, 4);
-                                v1_hi[pair] = u16x8_shr(qs_hi, 4);
+                            for xi in 0..gn {
+                                stripe[xi] = unpack_q4k_stripe(qs_ptr[xi], k, m4);
                             }
                         }
                         for ti in 0..tn {
@@ -523,56 +551,80 @@ pub fn gemm_q4_k_8x8_q8_k(
                                     ),
                                     0,
                                 ));
-                                for pair in 0..4 {
-                                    let j = pair * 2;
-                                    acc0[ti][j] += hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
-                                    acc0[ti][j + 1] += hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
-                                    acc1[ti][j] += hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
-                                    acc1[ti][j + 1] += hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
+                                for xi in 0..gn {
+                                    let [v0_lo, v0_hi, v1_lo, v1_hi] = stripe[xi];
+                                    for pair in 0..4 {
+                                        let j = pair * 2;
+                                        acc_sum8(i16x8_mul(v0_lo[pair], a0), &mut acc0[ti][xi][j]);
+                                        acc_sum8(
+                                            i16x8_mul(v0_hi[pair], a0),
+                                            &mut acc0[ti][xi][j + 1],
+                                        );
+                                        acc_sum8(i16x8_mul(v1_lo[pair], a1), &mut acc1[ti][xi][j]);
+                                        acc_sum8(
+                                            i16x8_mul(v1_hi[pair], a1),
+                                            &mut acc1[ti][xi][j + 1],
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                     let scale_base = batch * 32;
                     for ti in 0..tn {
-                        for j in 0..8 {
-                            iacc[ti][j] += i32::from(ub[scale_base + j]) * acc0[ti][j]
-                                + i32::from(ub[scale_base + 16 + j]) * acc1[ti][j];
+                        for xi in 0..gn {
+                            for j in 0..8 {
+                                iacc[ti][xi][j] += i32::from(hdr[xi].ub[scale_base + j])
+                                    * hsum_i32x4(acc0[ti][xi][j])
+                                    + i32::from(hdr[xi].ub[scale_base + 16 + j])
+                                        * hsum_i32x4(acc1[ti][xi][j]);
+                            }
                         }
                     }
                 }
+
                 for ti in 0..tn {
                     let yb = &qrows[(t0 + ti) * n_blocks + l];
-                    let mut iacc_min = [0i32; 8];
-                    for sb in 0..8 {
-                        let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
-                        let mins = unsafe {
-                            u16x8_extend_low_u8x16(u64x2(
-                                ptr::read_unaligned(ub.as_ptr().add(8 + sb * 16).cast::<u64>()),
-                                0,
-                            ))
-                        };
-                        let prod_lo = i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
-                        let prod_hi = i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
-                        iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
-                        iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
-                        iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
-                        iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
-                        iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
-                        iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
-                        iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
-                        iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
-                    }
-                    for j in 0..8 {
-                        let ds = d[j] * yb.d;
-                        sumf[ti][j] += iacc[ti][j] as f32 * ds;
-                        sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
+                    for xi in 0..gn {
+                        let mut iacc_min = [0i32; 8];
+                        for sb in 0..8 {
+                            let bsum =
+                                i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
+                            let mins = unsafe {
+                                u16x8_extend_low_u8x16(u64x2(
+                                    ptr::read_unaligned(
+                                        hdr[xi].ub.as_ptr().add(8 + sb * 16).cast::<u64>(),
+                                    ),
+                                    0,
+                                ))
+                            };
+                            let prod_lo =
+                                i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
+                            let prod_hi =
+                                i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
+                            iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
+                            iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
+                            iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
+                            iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
+                            iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
+                            iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
+                            iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
+                            iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
+                        }
+                        for j in 0..8 {
+                            let ds = hdr[xi].d[j] * yb.d;
+                            sumf[ti][xi][j] += iacc[ti][xi][j] as f32 * ds;
+                            sum_minf[ti][xi][j] += iacc_min[j] as f32 * (hdr[xi].dmin[j] * yb.d);
+                        }
                     }
                 }
             }
             for ti in 0..tn {
-                for j in 0..8 {
-                    out[(t0 + ti) * n_out + x * 8 + j] = sumf[ti][j] - sum_minf[ti][j];
+                for xi in 0..gn {
+                    for j in 0..8 {
+                        out[(t0 + ti) * n_out + (x0 + xi) * 8 + j] =
+                            sumf[ti][xi][j] - sum_minf[ti][xi][j];
+                    }
                 }
             }
         }
