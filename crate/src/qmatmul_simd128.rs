@@ -110,7 +110,7 @@ pub unsafe fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     out[0]
 }
 
-/// Sequence-tiled Q5_K×Q8_K. Weight superblock unpacked once per tile.
+/// Sequence-tiled Q5_K×Q8_K. Weight superblock unpacked once per tile. Precondition: `n_tile <= GEMM_TILE_TOKENS` — caller must clamp (`min`); the `debug_assert!` is compiled out in release.
 pub unsafe fn vec_dot_q5_k_q8_k_tile(
     w: &[u8],
     qrows: &[BlockQ8K],
@@ -337,7 +337,7 @@ pub unsafe fn vec_dot_q6_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     out[0]
 }
 
-/// Sequence-tiled Q6_K×Q8_K. Weight superblock unpacked once per tile.
+/// Sequence-tiled Q6_K×Q8_K. Weight superblock unpacked once per tile. Precondition: `n_tile <= GEMM_TILE_TOKENS` — caller must clamp (`min`); the `debug_assert!` is compiled out in release.
 pub unsafe fn vec_dot_q6_k_q8_k_tile(
     w: &[u8],
     qrows: &[BlockQ8K],
