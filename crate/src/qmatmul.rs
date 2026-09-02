@@ -57,16 +57,20 @@ const Q4_KX8_BYTES: usize = 1152; // 8*f16 d + 8*f16 dmin + 96 scales + 1024 qs
 /// tile, then applied to every token in the tile with the same Q8_K row
 /// quant + mul+add tree the GEMV uses. Not the 4×8 FMA GEMM.
 ///
-/// **32 tokens.** Working-set vs L2 8 MiB on the #35 measurement host:
-/// - Largest live matrix (Q4_K FFN up/gate/down):
-///   `144 B × (n_in/256) × n_out` = 1,327,104 B = **1.266 MiB**
-///   (Q5_K QKV is 176 × 3 × 2304 = 1,216,512 B = 1.160 MiB).
+/// **32 tokens.** Working-set vs L2 8 MiB on the #35 measurement host.
+/// Q4_K_M is a mix — confirm types against the file. This GGUF: QKV is
+/// Q5_K (×12), out-proj + FFN up/gate are Q4_K (×12), FFN-down is Q6_K
+/// on 6 layers and Q4_K on 6. Largest is the Q6_K down.
+/// - Largest live matrix (Q6_K FFN-down `3072×768`):
+///   `210 × (n_in/256) × n_out` = 1,935,360 B = **1.845 MiB**
+///   (Q4_K FFN up/gate is 144 × 3 × 3072 = 1,327,104 B = 1.266 MiB;
+///   Q5_K QKV is 176 × 3 × 2304 = 1,216,512 B = 1.160 MiB).
 /// - `BlockQ8K` is 292 B (`d` + `qs[256]` + `bsums[16]`).
 /// - Q8_K tile at FFN-down `n_in=3072`: 32 × 12 × 292 = **112,128 B**.
 /// - Output tile at FFN-up `n_out=3072`: 32 × 3072 × 4 = **393,216 B**.
-/// - Peak resident ≈ 1.266 + 0.107 + 0.375 = **1.75 MiB (22% of 8 MiB L2)**.
+/// - Peak resident ≈ 1.845 + 0.107 + 0.375 = **2.33 MiB (29% of 8 MiB L2)**.
 ///   One 8-col Q4_K group + the Q8_K tile + 32×8 accs is ~126 KB while
-///   streaming the matrix — well inside L2, with >6 MiB headroom.
+///   streaming the matrix — well inside L2, with >5.6 MiB headroom.
 /// - wasm:bench 8-case max n=19 fits in one tile (one weight pass).
 /// - n=502 → 16 tiles vs 502 per-token GEMV weight passes.
 pub(crate) const GEMM_TILE_TOKENS: usize = 32;
@@ -1455,31 +1459,32 @@ mod tests {
             return;
         }
         let gguf = crate::gguf::GgufFile::open(&gguf_path).unwrap();
+        // Types come from the file (Q4_K_M mix). Do not hardcode Q4_K:
+        // blk.0.ffn_down is Q6_K (210×12×768 = 1,935,360 B).
         let cases = [
-            ("blk.0.attn_output.weight", TensorType::Q4K, 7usize),
-            (
-                "blk.0.attn_output.weight",
-                TensorType::Q4K,
-                GEMM_TILE_TOKENS + 1,
-            ),
-            ("blk.0.attn_qkv.weight", TensorType::Q5K, 7),
-            (
-                "blk.0.attn_qkv.weight",
-                TensorType::Q5K,
-                GEMM_TILE_TOKENS + 1,
-            ),
-            ("blk.0.ffn_up.weight", TensorType::Q4K, 3),
-            ("blk.0.ffn_down.weight", TensorType::Q4K, 5),
+            ("blk.0.attn_output.weight", 7usize),
+            ("blk.0.attn_output.weight", GEMM_TILE_TOKENS + 1),
+            ("blk.0.attn_qkv.weight", 7),
+            ("blk.0.attn_qkv.weight", GEMM_TILE_TOKENS + 1),
+            ("blk.0.ffn_gate.weight", 3),
+            ("blk.0.ffn_up.weight", 3),
+            ("blk.0.ffn_down.weight", 5),
+            ("blk.0.ffn_up.weight", GEMM_TILE_TOKENS + 1),
         ];
         std::env::set_var("MILTON_Q8K", "1");
         std::env::set_var("MILTON_REPACK", "1");
-        for (name, ty, n_tok) in cases {
+        for (name, n_tok) in cases {
             let info = gguf.tensor(name).unwrap();
             let n_in = info.dimensions[0] as usize;
             let n_out = info.dimensions[1] as usize;
             let bytes = gguf.tensor_bytes(info).unwrap().to_vec();
             let f32w = gguf.dequantize_tensor(name).unwrap();
-            let w = QuantMat::new(ty, bytes, f32w, n_in, n_out);
+            let w = QuantMat::new(info.tensor_type, bytes, f32w, n_in, n_out);
+            eprintln!(
+                "tiled identity {name} ty={} n_in={n_in} n_out={n_out} bytes={}",
+                info.tensor_type.name(),
+                w.bytes.len()
+            );
             // Keep activations small so FFN-down (n_in=3072) does not overflow
             // to NaN; the comparison still treats NaN==NaN as a match.
             let x: Vec<f32> = (0..n_tok * n_in)
