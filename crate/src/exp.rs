@@ -43,8 +43,22 @@ fn rint_ne(x: f32) -> f32 {
 }
 
 /// `2^n * u` by adding `n` to the exponent field. `u` is a normal in ~[0.7, 1.5].
+///
+/// The encoding is only valid while the result stays a normal (biased
+/// exponent in 1..=254). `UNDERFLOW` is `-104`, so x in about
+/// `[-104, -88.4]` still reaches here with `n` ≤ `-128`. A wrapping add
+/// then flips the sign bit and returns a huge negative or `-Inf` instead
+/// of a tiny positive. Flush those lanes to 0 / +Inf — never wrap.
 #[inline(always)]
 fn ldexp_n(u: f32, n: i32) -> f32 {
+    let exp = ((u.to_bits() >> 23) & 0xff) as i32;
+    let e = exp.saturating_add(n);
+    if e <= 0 {
+        return 0.0;
+    }
+    if e >= 255 {
+        return f32::INFINITY;
+    }
     f32::from_bits(u.to_bits().wrapping_add((n as u32) << 23))
 }
 
@@ -183,8 +197,16 @@ fn expf4_simd128(x: std::arch::wasm32::v128) -> std::arch::wasm32::v128 {
     u = f32x4_add(f32x4_mul(u, r), f32x4_splat(C5));
     u = f32x4_add(f32x4_mul(u, r), f32x4_splat(1.0));
     u = f32x4_add(f32x4_mul(u, r), f32x4_splat(1.0));
-    let n = i32x4_shl(i32x4_trunc_sat_f32x4(n_f), 23);
+    // Same ldexp_n as scalar: exponent add only when the result is normal.
+    let n_i = i32x4_trunc_sat_f32x4(n_f);
+    let n = i32x4_shl(n_i, 23);
     let mut y = i32x4_add(u, n);
+    let exp_u = u32x4_shr(v128_and(u, i32x4_splat(0x7f80_0000u32 as i32)), 23);
+    let e = i32x4_add(exp_u, n_i);
+    let denorm = i32x4_lt(e, i32x4_splat(1));
+    let ovf_exp = i32x4_gt(e, i32x4_splat(254));
+    y = v128_bitselect(f32x4_splat(0.0), y, denorm);
+    y = v128_bitselect(f32x4_splat(f32::INFINITY), y, ovf_exp);
     let overflow = f32x4_gt(x, f32x4_splat(OVERFLOW));
     let underflow = f32x4_lt(x, f32x4_splat(UNDERFLOW));
     y = v128_bitselect(f32x4_splat(f32::INFINITY), y, overflow);
@@ -260,8 +282,19 @@ unsafe fn expf8_avx(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
     u = _mm256_add_ps(_mm256_mul_ps(u, r), _mm256_set1_ps(C5));
     u = _mm256_add_ps(_mm256_mul_ps(u, r), _mm256_set1_ps(1.0));
     u = _mm256_add_ps(_mm256_mul_ps(u, r), _mm256_set1_ps(1.0));
-    let n = _mm256_slli_epi32(_mm256_cvttps_epi32(n_f), 23);
+    // Same ldexp_n as scalar: exponent add only when the result is normal.
+    let n_i = _mm256_cvttps_epi32(n_f);
+    let n = _mm256_slli_epi32(n_i, 23);
     let mut y = _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(u), n));
+    let exp_u = _mm256_srli_epi32(
+        _mm256_and_si256(_mm256_castps_si256(u), _mm256_set1_epi32(0x7f80_0000u32 as i32)),
+        23,
+    );
+    let e = _mm256_add_epi32(exp_u, n_i);
+    let denorm = _mm256_cmpgt_epi32(_mm256_set1_epi32(1), e); // e < 1
+    let ovf_exp = _mm256_cmpgt_epi32(e, _mm256_set1_epi32(254)); // e > 254
+    y = _mm256_blendv_ps(y, _mm256_set1_ps(0.0), _mm256_castsi256_ps(denorm));
+    y = _mm256_blendv_ps(y, _mm256_set1_ps(f32::INFINITY), _mm256_castsi256_ps(ovf_exp));
     let overflow = _mm256_cmp_ps(x, _mm256_set1_ps(OVERFLOW), _CMP_GT_OQ);
     let underflow = _mm256_cmp_ps(x, _mm256_set1_ps(UNDERFLOW), _CMP_LT_OQ);
     y = _mm256_blendv_ps(y, _mm256_set1_ps(f32::INFINITY), overflow);
@@ -315,6 +348,47 @@ mod tests {
         assert!(expf_shared(f32::NAN).is_nan());
         assert!(expf_shared(100.0).is_infinite());
         assert_eq!(expf_shared(-200.0), 0.0);
+    }
+
+    /// Bugbot #26: bit-ldexp with n ≤ -128 wrapped the sign bit. x in
+    /// [-104, -88.4] must stay a tiny positive or 0 — never a huge
+    /// negative / -Inf that softmax and silu would treat as a weight.
+    #[test]
+    fn expf_shared_deep_underflow_does_not_wrap_sign() {
+        let mut x = -104.0f32;
+        let mut xs = Vec::new();
+        while x <= -88.4 {
+            xs.push(x);
+            let y = expf_shared(x);
+            assert!(
+                y.is_finite() && y >= 0.0,
+                "x={x} y={y} bits={:#010x} (huge negative / -Inf wrap)",
+                y.to_bits()
+            );
+            assert!(y < 1e-30, "x={x} y={y} expected tiny positive or 0");
+            x += 0.0625;
+        }
+        // SIMD + tail must match the scalar flush (nomic silu hits this band).
+        let mut got = xs.clone();
+        expf_inplace(&mut got);
+        for i in 0..xs.len() {
+            assert_eq!(
+                got[i].to_bits(),
+                expf_shared(xs[i]).to_bits(),
+                "simd lane {i} x={}",
+                xs[i]
+            );
+            assert!(got[i].is_finite() && got[i] >= 0.0 && got[i] < 1e-30);
+        }
+        // n = -127 (just above -88.4) used to produce NaN for some Horner u.
+        for x in [-88.3f32, -88.0, -87.5] {
+            let y = expf_shared(x);
+            assert!(
+                y.is_finite() && y >= 0.0,
+                "x={x} y={y} bits={:#010x}",
+                y.to_bits()
+            );
+        }
     }
 
     #[test]
