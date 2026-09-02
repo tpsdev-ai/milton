@@ -42,6 +42,11 @@ path = "src/bin/embed-gate.rs"
 name = "embed-must-fail"
 path = "src/bin/embed-must-fail.rs"
 
+[[bin]]
+name = "milton-profile"
+path = "src/bin/milton-profile.rs"
+required-features = ["profile"]
+
 [features]
 default = []
 # CLI extras for milton-tokenize. serde_json is a regular dep (dequant bins + tokenizer).
@@ -52,6 +57,9 @@ cli = []
 # wasm:compare must-fire receipt. Not `must-fail` — that name is already the
 # ForwardFault family (embed-must-fail / wasm:must-fail / dequant-must-fail).
 rope-libm-sin = []
+# Harness-only stage timers (issue #28). Default / shipped / wasm:build omit this
+# so the default wasm stays bit-identical. Do not enable on the embed path.
+profile = []
 
 [dependencies]
 unicode-general-category = "1.0"

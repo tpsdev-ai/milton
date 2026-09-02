@@ -254,3 +254,6 @@ mod f32_gate_tests {
         assert!(!r.pass);
     }
 }
+
+#[cfg(feature = "profile")]
+pub use model::Snapshot;

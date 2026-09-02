@@ -506,3 +506,10 @@ fn mean_pool_skip(
         *v *= inv;
     }
 }
+
+#[cfg(feature = "profile")]
+#[path = "profile.rs"]
+mod profile;
+
+#[cfg(feature = "profile")]
+pub use profile::Snapshot;

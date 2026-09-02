@@ -69,3 +69,22 @@ impl Milton {
         self.model.meta.embedding_length as u32
     }
 }
+
+#[cfg(feature = "profile")]
+#[wasm_bindgen]
+impl Milton {
+    /// Harness-only. Default wasm:build does not compile this export.
+    #[wasm_bindgen(js_name = embedProfiled)]
+    pub fn embed_profiled(&self, text: &str, prefix: &str) -> Result<String, JsError> {
+        let p = Prefix::parse(prefix).map_err(|e| JsError::new(&format!("fail-closed: {e}")))?;
+        let (v, snap) = self
+            .model
+            .embed_profiled(text, p)
+            .map_err(|e| JsError::new(&format!("fail-closed: {e}")))?;
+        serde_json::to_string(&serde_json::json!({
+            "vector": v,
+            "profile": snap,
+        }))
+        .map_err(|e| JsError::new(&format!("fail-closed: {e}")))
+    }
+}
