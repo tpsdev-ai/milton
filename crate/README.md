@@ -74,7 +74,7 @@ and never need a Rust toolchain. See `wasm/README.md` and `scripts/build-wasm.sh
 ```sh
 npm run wasm:build     # rustc + wasm-bindgen-cli 0.2.100 → wasm/milton_bg.wasm
 npm run wasm:gate      # WASM vs ref_f32 (ratio + absolute) + Q4 lock
-npm run wasm:compare   # native-Rust vs WASM within epsilon.json
+npm run wasm:compare   # native-Rust vs WASM within epsilon.json (shared exp)
 npm run wasm:bench     # cold-start + throughput vs baseline-bench.json
 npm run wasm:must-fail # layernorm / pooling / dropped-prefix must go RED
 ```

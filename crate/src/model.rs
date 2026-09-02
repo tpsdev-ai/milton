@@ -11,7 +11,7 @@ use crate::meta::{
 };
 use crate::ops::{
     attention_named, cls_pool, l2_normalize_inplace, layer_norm, mean_pool, rope_neox_inplace,
-    rope_norm_inplace, silu,
+    rope_norm_inplace, swiglu,
 };
 use crate::qmatmul::matmul_ggml;
 use crate::prefix::{Prefix, PrefixConfig};
@@ -355,12 +355,10 @@ impl Model {
                     dump_stage(&format!("ffn_up-{li}"), &ffn_up);
                     dump_stage(&format!("ffn_gate-{li}"), &ffn_gate);
                     let swap = matches!(variant, ForwardVariant::SwapSwiglu);
-                    for i in 0..ffn_hid.len() {
-                        ffn_hid[i] = if swap {
-                            ffn_gate[i] * silu(ffn_up[i])
-                        } else {
-                            ffn_up[i] * silu(ffn_gate[i])
-                        };
+                    if swap {
+                        swiglu(&ffn_up, &ffn_gate, &mut ffn_hid);
+                    } else {
+                        swiglu(&ffn_gate, &ffn_up, &mut ffn_hid);
                     }
                     dump_stage(&format!("ffn_swiglu-{li}"), &ffn_hid);
                 }

@@ -111,17 +111,21 @@ fn next_down_f64(s: f64) -> f64 {
     }
 }
 
-/// ggml `ggml_silu_f32`: x / (1 + exp(-x)). Stay on libm.
+/// ggml `ggml_silu_f32`: x / (1 + exp(-x)), using the shared permissive `exp`.
 ///
-/// Pin dump `ffn_swiglu` leftover vs this is ~2.7e-7 (empty-none 1.93e-7,
+/// Pin dump `ffn_swiglu` leftover vs libm is ~2.7e-7 (empty-none 1.93e-7,
 /// document 2.69e-7). AVX2 `ggml_vec_swiglu_f32` / `ggml_v_silu` /
 /// `ggml_v_expf` is BIT_EXACT vs that dump (DSO too) and empty-none FINAL
 /// stayed PASS, but short-hello-none avalanched (cos_dist 0 → 0.01108,
-/// max_abs 0.01775). Same class as dump-kq / Q4_K GEMV FMA. Do not land.
+/// max_abs 0.01775). Same class as dump-kq / Q4_K GEMV FMA. Do not land
+/// ggml_v_expf. Both backends use `crate::exp` (mul+add minimax).
 #[inline]
+#[allow(dead_code)] // native tests; wasm forward uses `swiglu`
 pub fn silu(x: f32) -> f32 {
-    x / (1.0 + (-x).exp())
+    crate::exp::silu(x)
 }
+
+pub use crate::exp::swiglu;
 
 /// x: [n_tokens, n_in], w: [n_out, n_in] row-major (GGUF [n_in, n_out] columns).
 /// y: [n_tokens, n_out]
@@ -142,12 +146,12 @@ pub fn matmul(x: &[f32], w: &[f32], n_tokens: usize, n_in: usize, n_out: usize, 
     }
 }
 
-/// ggml softmax: max-subtract, exp, f64 sum, scale.
+/// ggml softmax: max-subtract, shared `exp`, f64 sum, scale.
 ///
-/// Native `f32::exp` is glibc `expf`. WASM `f32::exp` is compiler-builtins
-/// and is the first native-vs-WASM split after bit-exact Q@K (`kq-dots`).
-/// Do not swap in musl/`libm::expf` (does not match glibc). Do not copy
-/// glibc (LGPL) into this tree.
+/// Both backends run `crate::exp` (Cody-Waite + Horner, mul+add). Native
+/// `f32::exp` is glibc `expf` and WASM `f32::exp` is compiler-builtins;
+/// those split at 1 ULP after bit-exact Q@K (`kq-dots`, issue #24). Do not
+/// swap in musl/`libm::expf`. Do not copy glibc (LGPL).
 pub fn softmax_inplace(logits: &mut [f32]) {
     let mut max = f32::NEG_INFINITY;
     for &v in logits.iter() {
@@ -155,10 +159,12 @@ pub fn softmax_inplace(logits: &mut [f32]) {
             max = v;
         }
     }
-    let mut sum = 0.0f64;
     for v in logits.iter_mut() {
-        let e = (*v - max).exp();
-        *v = e;
+        *v -= max;
+    }
+    crate::exp::expf_inplace(logits);
+    let mut sum = 0.0f64;
+    for &e in logits.iter() {
         sum += f64::from(e);
     }
     let inv = if sum > 0.0 { (1.0 / sum) as f32 } else { 0.0 };
@@ -198,8 +204,13 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
                 let x1 = x[base + i + half];
                 let cos_t = cache[2 * i];
                 let sin_t = cache[2 * i + 1];
-                x[base + i] = fmaf32(x0, cos_t, -(x1 * sin_t));
-                x[base + i + half] = fmaf32(x0, sin_t, x1 * cos_t);
+                // Mul+add, not FMA. Native `fmaf32` is glibc/hardware FMA;
+                // WASM `fmaf32_soft` is not bit-identical on this apply
+                // (issue #25 Qcur-0/Kcur-0). Remaining native-vs-WASM split
+                // after this is glibc `sinf` vs WASM compiler-builtins (1 ULP
+                // at t=6, i=14) — not this polynomial.
+                x[base + i] = x0 * cos_t + -(x1 * sin_t);
+                x[base + i + half] = x0 * sin_t + x1 * cos_t;
             }
         }
     }
@@ -339,12 +350,15 @@ pub fn attention_named(
             for tk in 0..n_tokens {
                 let a = scores[tk];
                 let voff = (tk * n_heads + h) * head_dim;
-                for i in 0..head_dim {
-                    // ggml AVX2 leftover `sumf += x*y` contracts to vfmadd
-                    // (`fmaf(a, v, acc)`). BIT_EXACT vs dump kqv on n=2
-                    // (empty-none). Do not revert to mul+add.
-                    out[ooff + i] = fmaf32(a, v[voff + i], out[ooff + i]);
-                }
+                // Shared mul+add V-mix (not FMA). Native AVX2 `vfmadd` and
+                // WASM software `fmaf32` matched each other, but WASM SIMD128
+                // has no IEEE FMA; vectorizing with mul+add on BOTH backends
+                // is bit-identical by construction (issue #25 / #24 GEMV).
+                crate::exp::vmix_axpy(
+                    &mut out[ooff..ooff + head_dim],
+                    a,
+                    &v[voff..voff + head_dim],
+                );
             }
         }
     }
@@ -422,11 +436,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn silu_matches_ggml() {
+    fn silu_matches_shared_exp() {
         assert!((silu(0.0) - 0.0).abs() < 1e-7);
         let x = 1.0f32;
-        let expect = x / (1.0 + (-x).exp());
-        assert!((silu(x) - expect).abs() < 1e-7);
+        let expect = x / (1.0 + crate::exp::expf_shared(-x));
+        assert_eq!(silu(x).to_bits(), expect.to_bits());
     }
 
     #[test]

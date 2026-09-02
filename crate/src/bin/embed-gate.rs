@@ -4,10 +4,13 @@
 //! AND `ratio = cos_dist / quant_budget <= ratio_max` (1.5, pinned in
 //! `quant-budget.json` next to `safety_factor`). The budget is llama.cpp's
 //! own Q4_K_M vs F16 error (not a hand-picked epsilon). `epsilon.json` is
-//! the Q4-vs-Q4 run-to-run floor and is not rewritten here. empty-none and
-//! short-hello-none stay locked to that floor against `vectors.json`.
-//! All 18 corpus cases are gated (#15: unicode-nfd / newlines-tabs goldens
-//! are llama.cpp GGUF-forward on HF token IDs).
+//! the Q4-vs-Q4 run-to-run floor and is not rewritten here. Must-fail still
+//! uses that floor. The two-case tight pin vs `vectors.json` (empty-none /
+//! short-hello-none) is retired: shared minimax `exp` is not ggml `expf`,
+//! so that lock vs llama.cpp end-to-end is gone (#25). Q4-vs-llama distances
+//! stay on the receipt as observation only. All 18 corpus cases are gated
+//! (#15: unicode-nfd / newlines-tabs goldens are llama.cpp GGUF-forward on
+//! HF token IDs).
 
 use milton::{compare_vectors, f32_gate_pass, Model, Prefix};
 use serde::Deserialize;
@@ -134,8 +137,6 @@ fn main() -> ExitCode {
     }
 
     let pending: HashSet<String> = budget.pending_excluded.iter().cloned().collect();
-    // Landed serial-path lock: these two must stay within the Q4 run-to-run floor.
-    let q4_lock: HashSet<&str> = ["empty-none", "short-hello-none"].into_iter().collect();
 
     let model = match Model::load(&gguf) {
         Ok(m) => m,
@@ -216,8 +217,6 @@ fn main() -> ExitCode {
                         "within_ratio": decision.within_ratio,
                     }));
                 }
-                let lock_fail = q4_lock.contains(c.id.as_str())
-                    && vs_q4.as_ref().is_some_and(|c| !c.pass);
                 let row = json!({
                     "id": c.id,
                     "prefix": c.prefix,
@@ -235,7 +234,7 @@ fn main() -> ExitCode {
                 });
                 if is_pending {
                     pending_rows.push(row);
-                } else if !decision.pass || lock_fail {
+                } else if !decision.pass {
                     let mut reason = Vec::new();
                     if !decision.within_absolute {
                         reason.push(format!(
@@ -247,12 +246,6 @@ fn main() -> ExitCode {
                         reason.push(format!(
                             "ratio={} > ratio_max={}",
                             decision.ratio, budget.ratio_max
-                        ));
-                    }
-                    if lock_fail {
-                        reason.push(format!(
-                            "q4_lock:{}",
-                            vs_q4.as_ref().and_then(|c| c.reason.clone()).unwrap_or_default()
                         ));
                     }
                     let mut fail = row;
@@ -269,6 +262,7 @@ fn main() -> ExitCode {
     let pass = failures.is_empty();
     let receipt = json!({
         "schema": "milton.embed.receipt/2",
+        "gate": "f32_ratio",
         "oracle": "ref_f32",
         "result": if pass { "pass" } else { "fail" },
         "n": n,
@@ -288,7 +282,8 @@ fn main() -> ExitCode {
             "epsilon": eps.epsilon,
             "epsilon_abs": eps.epsilon_abs,
         },
-        "q4_lock": ["empty-none", "short-hello-none"],
+        "q4_vs_llama": "observed_not_locked",
+        "tight_tier_vs_q_llama": "retired",
         "pending_excluded": budget.pending_excluded,
         "corpus_digest": q4_goldens.corpus_digest,
         "pooling": model.meta.pooling,
