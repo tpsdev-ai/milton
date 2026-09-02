@@ -574,20 +574,41 @@ fn q4k_tile_allk(
             let off = (x * n_blocks + l) * Q4_KX8_BYTES;
             let unpacked = Q4kUnpacked::from_block(&repack[off..off + Q4_KX8_BYTES], m4);
             let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
-            for k in 0..16 {
-                let (s0a, s1a, s0b, s1b) = stripe_scales(&unpacked.ub, k);
-                for ti in 0..tn {
-                    let yb = &qrows[(t0 + ti) * n_blocks + l];
+            let scales = [
+                stripe_scales(&unpacked.ub, 0),
+                stripe_scales(&unpacked.ub, 1),
+                stripe_scales(&unpacked.ub, 2),
+                stripe_scales(&unpacked.ub, 3),
+                stripe_scales(&unpacked.ub, 4),
+                stripe_scales(&unpacked.ub, 5),
+                stripe_scales(&unpacked.ub, 6),
+                stripe_scales(&unpacked.ub, 7),
+                stripe_scales(&unpacked.ub, 8),
+                stripe_scales(&unpacked.ub, 9),
+                stripe_scales(&unpacked.ub, 10),
+                stripe_scales(&unpacked.ub, 11),
+                stripe_scales(&unpacked.ub, 12),
+                stripe_scales(&unpacked.ub, 13),
+                stripe_scales(&unpacked.ub, 14),
+                stripe_scales(&unpacked.ub, 15),
+            ];
+            // Tokens outer — the 6b70c5e `dot_q8k` nest. i32 `iacc` adds are
+            // associative, so this matches per-k's k-outer totals; f32 stage
+            // still runs once per superblock after iacc is complete.
+            for ti in 0..tn {
+                let yb = &qrows[(t0 + ti) * n_blocks + l];
+                for k in 0..16 {
+                    let (s0a, s1a, s0b, s1b) = &scales[k];
                     unsafe {
                         q4k_stripe_iacc(
                             &unpacked.v0_lo[k],
                             &unpacked.v0_hi[k],
                             &unpacked.v1_lo[k],
                             &unpacked.v1_hi[k],
-                            &s0a,
-                            &s1a,
-                            &s0b,
-                            &s1b,
+                            s0a,
+                            s1a,
+                            s0b,
+                            s1b,
                             yb,
                             k,
                             &mut iacc[ti],

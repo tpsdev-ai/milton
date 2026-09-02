@@ -9,8 +9,8 @@
  * in the #46 plan-first comment.
  */
 
-const WARMUP = 4;
-const SAMPLES = 16;
+const WARMUP = 2;
+const SAMPLES = 8;
 
 function median(xs) {
   const a = xs.slice().sort((x, y) => x - y);
@@ -83,16 +83,24 @@ export function applyQ4kPolicy(api, env = process.env) {
       `fail-closed: Q4_K per-k vs all-k not bit-exact max_abs=${maxAbs}`,
     );
   }
-  const perk1 = timeCalls(() => api.q4kRunPerk(1), 1);
+  // Full-tile first: if all-k loses n=32, skip n=1 (threshold=33).
   const perk32 = timeCalls(() => api.q4kRunPerk(32), 32);
-  const allk1 = timeCalls(() => api.q4kRunAllk(1), 1);
   const allk32 = timeCalls(() => api.q4kRunAllk(32), 32);
-  const threshold = crossoverThreshold(
-    perk1.median_ms,
-    perk32.median_ms,
-    allk1.median_ms,
-    allk32.median_ms,
-  );
+  let perk1 = { n: 1, median_ms: null, samples: [] };
+  let allk1 = { n: 1, median_ms: null, samples: [] };
+  let threshold;
+  if (!(allk32.median_ms < perk32.median_ms)) {
+    threshold = 33;
+  } else {
+    perk1 = timeCalls(() => api.q4kRunPerk(1), 1);
+    allk1 = timeCalls(() => api.q4kRunAllk(1), 1);
+    threshold = crossoverThreshold(
+      perk1.median_ms,
+      perk32.median_ms,
+      allk1.median_ms,
+      allk32.median_ms,
+    );
+  }
   api.q4kSetForce("auto");
   api.q4kSetThreshold(threshold);
   const costMs = performance.now() - t0;
