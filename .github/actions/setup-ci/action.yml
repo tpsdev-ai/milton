@@ -1,0 +1,144 @@
+name: setup-ci
+description: Pin Rust, Node, wasm-bindgen, and the Q4 GGUF from repo files
+inputs:
+  wasm-bindgen:
+    description: Install wasm-bindgen-cli at the version in scripts/build-wasm.sh
+    default: "false"
+  gguf:
+    description: Cache/download the Q4 GGUF pinned by harness/goldens/pin.json
+    default: "true"
+outputs:
+  rust-channel:
+    description: rust-toolchain.toml channel
+    value: ${{ steps.pins.outputs.rust_channel }}
+  rustc-cachekey:
+    description: Short rustc hash from dtolnay/rust-toolchain
+    value: ${{ steps.rust.outputs.cachekey }}
+  gguf-sha256:
+    description: pin.json gguf_sha256
+    value: ${{ steps.pins.outputs.gguf_sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assert AVX2 (native receipts are the AVX2 path)
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! grep -q avx2 /proc/cpuinfo; then
+          echo "fail-closed: runner has no AVX2; native receipts are the AVX2 path" >&2
+          exit 1
+        fi
+        echo "ok  avx2 present"
+
+    - name: Read pins from repo files
+      id: pins
+      shell: bash
+      run: python3 scripts/ci/read-pins.py
+
+    - name: Set up Node from package.json engines
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ steps.pins.outputs.node_major }}
+
+    - name: npm ci (committed lockfile)
+      shell: bash
+      run: npm ci
+
+    - name: Set up Rust from rust-toolchain.toml
+      id: rust
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      with:
+        toolchain: ${{ steps.pins.outputs.rust_channel }}
+        targets: ${{ steps.pins.outputs.rust_targets }}
+
+    - name: Cache cargo registry + crate/target
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          crate/target
+        key: cargo-${{ runner.os }}-${{ steps.rust.outputs.cachekey }}-${{ hashFiles('crate/Cargo.lock', 'rust-toolchain.toml') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ steps.rust.outputs.cachekey }}-
+
+    - name: Cache wasm-bindgen-cli
+      if: inputs.wasm-bindgen == 'true'
+      id: bindgen-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/wasm-bindgen
+        key: wasm-bindgen-${{ runner.os }}-${{ steps.pins.outputs.bindgen_version }}
+
+    - name: Install wasm-bindgen-cli from scripts/build-wasm.sh
+      if: inputs.wasm-bindgen == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        WANT="${{ steps.pins.outputs.bindgen_version }}"
+        if command -v wasm-bindgen >/dev/null 2>&1; then
+          GOT="$(wasm-bindgen --version | awk '{print $2}')"
+          if [[ "$GOT" == "$WANT" ]]; then
+            echo "ok  wasm-bindgen $GOT (cached or already installed)"
+            exit 0
+          fi
+          echo "stale wasm-bindgen $GOT — installing $WANT"
+        fi
+        cargo install wasm-bindgen-cli --version "$WANT" --locked --force
+        GOT="$(wasm-bindgen --version | awk '{print $2}')"
+        if [[ "$GOT" != "$WANT" ]]; then
+          echo "fail-closed: wasm-bindgen is $GOT, scripts/build-wasm.sh pins $WANT" >&2
+          exit 1
+        fi
+        echo "ok  wasm-bindgen $GOT"
+
+    - name: Cache Q4 GGUF (keyed by pin.json sha256)
+      if: inputs.gguf == 'true'
+      id: gguf-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pins.outputs.gguf_relpath }}
+        key: gguf-${{ steps.pins.outputs.gguf_sha256 }}
+
+    - name: Fetch Q4 GGUF and verify sha256 before use
+      if: inputs.gguf == 'true'
+      shell: bash
+      env:
+        GGUF_SHA256: ${{ steps.pins.outputs.gguf_sha256 }}
+        GGUF_FILE: ${{ steps.pins.outputs.gguf_file }}
+        GGUF_URL: ${{ steps.pins.outputs.gguf_url }}
+        GGUF_REL: ${{ steps.pins.outputs.gguf_relpath }}
+      run: |
+        set -euo pipefail
+        mkdir -p harness/models harness/vendor/models
+        DEST="$GITHUB_WORKSPACE/$GGUF_REL"
+        verify() {
+          local got
+          got="$(sha256sum "$1" | awk '{print $1}')"
+          if [[ "$got" != "$GGUF_SHA256" ]]; then
+            echo "fail-closed: GGUF digest mismatch: got $got want $GGUF_SHA256" >&2
+            return 1
+          fi
+          echo "ok  GGUF sha256=$got bytes=$(wc -c < "$1")"
+        }
+        if [[ -f "$DEST" ]]; then
+          if verify "$DEST"; then
+            :
+          else
+            echo "cached GGUF failed the pin — deleting (no fallback digest)" >&2
+            rm -f "$DEST"
+          fi
+        fi
+        if [[ ! -f "$DEST" ]]; then
+          echo "fetching $GGUF_FILE from pin.json source..."
+          curl -L --fail --retry 4 --retry-delay 4 -o "$DEST" "$GGUF_URL"
+          if ! verify "$DEST"; then
+            rm -f "$DEST"
+            echo "fail-closed: downloaded GGUF does not match pin.json; no fallback" >&2
+            exit 1
+          fi
+        fi
+        ln -sfn "$DEST" "$GITHUB_WORKSPACE/harness/vendor/models/$GGUF_FILE"
+        echo "MILTON_GGUF=$DEST" >> "$GITHUB_ENV"
+        echo "MILTON_REFERENCE_GGUF=$DEST" >> "$GITHUB_ENV"

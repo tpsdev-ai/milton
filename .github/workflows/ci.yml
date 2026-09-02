@@ -1,0 +1,133 @@
+# GitHub-hosted gates. Pins come from repo files (rust-toolchain.toml,
+# package.json engines, scripts/build-wasm.sh, harness/goldens/pin.json).
+# Do not duplicate those versions here.
+#
+# F16 GGUF is a convert_hf_to_gguf artifact (pin-f16.json), not a HuggingFace
+# file. None of these five jobs need it: embed:gate / wasm:gate read committed
+# vectors-f16.json. discriminate-f32 is not on PR CI. Do not invent an F16 download.
+#
+# Not on PR CI: wasm:bench, harness:goldens, harness:f16.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - name: npm test
+        run: npm test
+      - name: tokenizer:check
+        run: npm run tokenizer:check
+      - name: tokenizer:must-fail
+        run: npm run tokenizer:must-fail
+
+  dequant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - name: dequant:gate
+        run: npm run dequant:gate
+      - name: dequant:must-fail
+        run: npm run dequant:must-fail
+
+  embed-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - name: embed:gate
+        run: npm run embed:gate
+      - name: embed:must-fail
+        run: npm run embed:must-fail
+
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+        with:
+          wasm-bindgen: "true"
+      - name: Snapshot committed wasm (byte-compare after rebuild)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/committed-wasm"
+          cp wasm/milton_bg.wasm "$RUNNER_TEMP/committed-wasm/milton_bg.wasm"
+          cp wasm/milton.js "$RUNNER_TEMP/committed-wasm/milton.js"
+          sha256sum "$RUNNER_TEMP/committed-wasm/milton_bg.wasm" "$RUNNER_TEMP/committed-wasm/milton.js"
+      - name: wasm:build
+        run: npm run wasm:build
+      - name: Upload rebuilt wasm (CI is the build of record)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: milton_bg.wasm
+          path: wasm/milton_bg.wasm
+          if-no-files-found: error
+          retention-days: 14
+      - name: Section-table diff (wasm-objdump)
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wabt
+          bash scripts/ci/wasm-section-diff.sh \
+            "$RUNNER_TEMP/committed-wasm/milton_bg.wasm" \
+            wasm/milton_bg.wasm
+      - name: Byte-compare rebuilt wasm vs committed
+        id: wasm-bytes
+        run: |
+          set -euo pipefail
+          match=true
+          for f in milton_bg.wasm milton.js; do
+            echo "committed $(sha256sum "$RUNNER_TEMP/committed-wasm/$f")"
+            echo "rebuilt   $(sha256sum "wasm/$f")"
+            if ! cmp -s "$RUNNER_TEMP/committed-wasm/$f" "wasm/$f"; then
+              echo "FINDING: rebuilt wasm/$f is not byte-identical to the committed file"
+              match=false
+            fi
+          done
+          echo "match=$match" >> "$GITHUB_OUTPUT"
+          if [[ "$match" != "true" ]]; then
+            echo "::error::wasm rebuild is not byte-reproducible. Keep this lane red; gate on the rebuilt artifact. Do not weaken the compare. Do not commit a new wasm unless the committed artifact is proven stale vs this SHA's sources."
+          fi
+      - name: wasm:gate (rebuilt artifact)
+        run: npm run wasm:gate
+      - name: wasm:must-fail
+        run: npm run wasm:must-fail
+      - name: footprint (zero_native_in_wasm + size)
+        run: npm run harness:footprint
+      - name: Fail if wasm is not byte-reproducible
+        if: steps.wasm-bytes.outputs.match != 'true'
+        run: |
+          echo "fail-closed: byte-compare vs committed wasm/milton_bg.wasm + wasm/milton.js failed" >&2
+          exit 1
+
+  wasm-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - name: Build native milton-embed (AVX2 path)
+        run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
+      - name: wasm:compare two-way expected-outcome
+        run: npm run wasm:compare-verdict

@@ -26,7 +26,11 @@ if [[ "$GOT" != "$BINDGEN_VERSION" ]]; then
 fi
 
 # SIMD128 — also in crate/.cargo/config.toml.
-export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128"
+# Remap CARGO_HOME registry + repo root so panic locations are host-stable.
+# Builder box is /usr/local/cargo (16 chars); GH ubuntu-latest is
+# /home/runner/.cargo (19). That 3-char prefix delta was Data +8 on CI.
+CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128 --remap-path-prefix=${CARGO_HOME_DIR}/registry/src=/cargo/registry/src --remap-path-prefix=${ROOT}=/milton"
 
 cargo build --manifest-path "$CRATE/Cargo.toml" \
   --target wasm32-unknown-unknown --release --lib
