@@ -95,15 +95,12 @@ pub fn rope_theta_scale(freq_base: f32, head_dim: usize) -> f32 {
 
 /// Test-only: put libm `sinf`/`cosf` back on the **native** backend.
 ///
-/// Compiled in only with `--features rope-libm-sin`. Default / shipped
-/// builds have no env-var read and no `MILTON_ROPE_LIBM_SIN` string —
-/// this function is the constant `false`. With the feature,
 /// `MILTON_ROPE_LIBM_SIN=1` on native `milton-embed` turns `wasm:compare`
 /// RED (one backend on glibc, the other on the shared kernel). WASM never
 /// honours the switch — a gate nobody has seen fail is not a gate.
 #[inline]
 pub fn rope_use_libm_sin() -> bool {
-    #[cfg(all(feature = "rope-libm-sin", not(target_arch = "wasm32")))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rope-libm-sin"))]
     {
         use std::sync::OnceLock;
         static ON: OnceLock<bool> = OnceLock::new();
@@ -112,7 +109,7 @@ pub fn rope_use_libm_sin() -> bool {
             Err(_) => false,
         });
     }
-    #[cfg(not(all(feature = "rope-libm-sin", not(target_arch = "wasm32"))))]
+    #[cfg(not(all(not(target_arch = "wasm32"), feature = "rope-libm-sin")))]
     {
         false
     }

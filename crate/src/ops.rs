@@ -210,8 +210,7 @@ pub fn rope_neox_inplace(
             crate::trig::ROPE_THETA_MAX
         );
         if crate::trig::rope_use_libm_sin() {
-            // Test-only + `--features rope-libm-sin`: libm on ONE backend
-            // (native). Turns wasm:compare RED. Absent from default builds.
+            // Test-only: libm on ONE backend (native). Turns wasm:compare RED.
             for i in 0..half {
                 sins[i] = thetas[i].sin();
                 coses[i] = thetas[i].cos();
