@@ -35,7 +35,8 @@ const BASELINE = JSON.parse(
   readFileSync(join(HERE, "..", "goldens", "baseline-bench.json"), "utf8"),
 );
 const GGUF = resolveGguf();
-const OUT_JSON = join(HERE, "..", "goldens", "stage-profile.json");
+const OUT_JSON = join(HERE, "..", "profile", "stage-profile.json");
+const OUT_TABLES = join(HERE, "..", "profile", "stage-profile.tables.md");
 
 const STAGE_ORDER = [
   "tokenize",
@@ -756,7 +757,7 @@ async function main() {
   md.push("## WASM (SIMD128, `--features profile`, separate artifact)");
   md.push(mdTable(wasmRows, tableCols));
   md.push("");
-  writeFileSync(join(HERE, "..", "goldens", "stage-profile.tables.md"), `${md.join("\n")}\n`);
+  writeFileSync(OUT_TABLES, `${md.join("\n")}\n`);
   process.stdout.write(md.join("\n") + "\n");
   process.stdout.write(`\nwrote ${OUT_JSON}\n`);
 }
