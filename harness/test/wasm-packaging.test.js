@@ -37,6 +37,23 @@ describe("WASM-SIMD packaging", () => {
     assert.match(build, /Consumers do NOT run this/);
   });
 
+  it("remap-path-prefix makes registry panic paths host-stable", () => {
+    const build = readFileSync(BUILD, "utf8");
+    assert.match(build, /CARGO_HOME_DIR="\$\{CARGO_HOME:-\$HOME\/\.cargo\}"/);
+    assert.match(
+      build,
+      /--remap-path-prefix=\$\{CARGO_HOME_DIR\}\/registry\/src=\/cargo\/registry\/src/,
+    );
+    assert.match(build, /--remap-path-prefix=\$\{ROOT\}=\/milton/);
+    const bytes = readFileSync(WASM);
+    assert.ok(
+      bytes.includes(Buffer.from("/cargo/registry/src")),
+      "committed wasm missing remapped /cargo/registry/src",
+    );
+    assert.equal(bytes.includes(Buffer.from("/usr/local/cargo")), false);
+    assert.equal(bytes.includes(Buffer.from("/home/runner/.cargo")), false);
+  });
+
   it("public glue loads the prebuilt wasm, not a native bin", () => {
     const src = readFileSync(SRC, "utf8");
     assert.match(src, /milton_bg\.wasm/);

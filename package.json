@@ -41,6 +41,7 @@
     "wasm:build": "bash scripts/build-wasm.sh",
     "wasm:gate": "node harness/scripts/run-wasm-gate.mjs",
     "wasm:compare": "node harness/scripts/compare-native-wasm.mjs",
+    "wasm:compare-verdict": "node harness/scripts/wasm-compare-verdict.mjs",
     "wasm:bench": "node harness/scripts/bench-milton.mjs",
     "wasm:must-fail": "node harness/scripts/wasm-must-fail.mjs"
   },
