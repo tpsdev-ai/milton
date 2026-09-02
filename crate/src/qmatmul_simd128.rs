@@ -12,7 +12,7 @@ use std::arch::wasm32::*;
 use std::ptr;
 
 use crate::dequant::f16_to_f32;
-use crate::qmatmul::{BlockQ8K, QK_K};
+use crate::qmatmul::{BlockQ8K, GEMM_TILE_TOKENS, QK_K};
 
 const Q5_K_BYTES: usize = 176;
 const Q6_K_BYTES: usize = 210;
@@ -94,7 +94,10 @@ fn hsum_i32x4(v: v128) -> i32 {
 /// Horizontal sum of 8 i16 products (fits i32).
 #[inline(always)]
 fn hsum_i16x8(v: v128) -> i32 {
-    hsum_i32x4(i32x4_add(i32x4_extend_low_i16x8(v), i32x4_extend_high_i16x8(v)))
+    hsum_i32x4(i32x4_add(
+        i32x4_extend_low_i16x8(v),
+        i32x4_extend_high_i16x8(v),
+    ))
 }
 
 /// llama.cpp `ggml_vec_dot_q5_K_q8_K` AVX2 (`quants.c` ~1919) as 2× SIMD128.
@@ -102,7 +105,23 @@ fn hsum_i16x8(v: v128) -> i32 {
 /// Integer tree matches the ymm split (maddubs + madd + scale shuffle).
 /// Float acc uses the same 8-wide FMA-then-`hsum_float_8` shape.
 pub unsafe fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
-    debug_assert_eq!(w.len(), y.len() * Q5_K_BYTES);
+    let mut out = [0.0f32; 1];
+    vec_dot_q5_k_q8_k_tile(w, y, 1, y.len(), &mut out);
+    out[0]
+}
+
+/// Sequence-tiled Q5_K×Q8_K. Weight superblock unpacked once per tile.
+pub unsafe fn vec_dot_q5_k_q8_k_tile(
+    w: &[u8],
+    qrows: &[BlockQ8K],
+    n_tile: usize,
+    n_blocks: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(w.len(), n_blocks * Q5_K_BYTES);
+    debug_assert_eq!(qrows.len(), n_tile * n_blocks);
+    debug_assert!(n_tile <= GEMM_TILE_TOKENS);
+    debug_assert!(n_tile <= out.len());
 
     // 8×16-byte rows — each broadcasts one i16 scale (AVX2 K_SHUFFLE low half).
     #[rustfmt::skip]
@@ -122,14 +141,14 @@ pub unsafe fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     const KMASK3: u32 = 0x03030303;
 
     let m4 = u8x16_splat(0x0F);
-    let mut acc_lo = f32x4_splat(0.0);
-    let mut acc_hi = f32x4_splat(0.0);
-    let mut summs = 0.0f32;
+    let mut acc_lo = [f32x4_splat(0.0); GEMM_TILE_TOKENS];
+    let mut acc_hi = [f32x4_splat(0.0); GEMM_TILE_TOKENS];
+    let mut summs = [0.0f32; GEMM_TILE_TOKENS];
 
-    for (i, yb) in y.iter().enumerate() {
+    for i in 0..n_blocks {
         let block = &w[i * Q5_K_BYTES..(i + 1) * Q5_K_BYTES];
-        let d = yb.d * f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
-        let dmin = -yb.d * f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
+        let d_w = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+        let dmin_w = f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
 
         let mut utmp = [0u32; 4];
         utmp[0] = u32::from_le_bytes(block[4..8].try_into().unwrap());
@@ -151,80 +170,97 @@ pub unsafe fn vec_dot_q5_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
         let scales = u16x8_extend_low_u8x16(packed);
         let mins = u16x8_extend_high_u8x16(packed);
 
-        let bsums_lo = load16(yb.bsums.as_ptr().cast());
-        let bsums_hi = load16(yb.bsums.as_ptr().add(8).cast());
-        let q8s = hadd_epi16(bsums_lo, bsums_hi);
-        let prod = madd_epi16(mins, q8s);
-        let extract = hsum_i32x4(prod) as f32;
-        summs = fmaf32(dmin, extract, summs);
-
         let hbits_lo = load16(block[16..48].as_ptr());
         let hbits_hi = load16(block[16..48].as_ptr().add(16));
-        let mut hmask = u8x16_splat(1);
-        let mut sumi_lo = i32x4_splat(0);
-        let mut sumi_hi = i32x4_splat(0);
         let q5 = block[48..176].as_ptr();
-        let q8 = yb.qs.as_ptr();
         let sh = K_SHUFFLE.as_ptr();
+        let sh0 = load16(sh);
+        let sh1 = load16(sh.add(16));
+        let sh2 = load16(sh.add(32));
+        let sh3 = load16(sh.add(48));
+        let sh4 = load16(sh.add(64));
+        let sh5 = load16(sh.add(80));
+        let sh6 = load16(sh.add(96));
+        let sh7 = load16(sh.add(112));
 
-        q5k_chunk::<0, 1>(
-            scales,
-            load16(sh),
-            load16(sh.add(16)),
-            q5,
-            q8,
-            hbits_lo,
-            hbits_hi,
-            &mut hmask,
-            m4,
-            &mut sumi_lo,
-            &mut sumi_hi,
-        );
-        q5k_chunk::<2, 3>(
-            scales,
-            load16(sh.add(32)),
-            load16(sh.add(48)),
-            q5.add(32),
-            q8.add(64),
-            hbits_lo,
-            hbits_hi,
-            &mut hmask,
-            m4,
-            &mut sumi_lo,
-            &mut sumi_hi,
-        );
-        q5k_chunk::<4, 5>(
-            scales,
-            load16(sh.add(64)),
-            load16(sh.add(80)),
-            q5.add(64),
-            q8.add(128),
-            hbits_lo,
-            hbits_hi,
-            &mut hmask,
-            m4,
-            &mut sumi_lo,
-            &mut sumi_hi,
-        );
-        q5k_chunk::<6, 7>(
-            scales,
-            load16(sh.add(96)),
-            load16(sh.add(112)),
-            q5.add(96),
-            q8.add(192),
-            hbits_lo,
-            hbits_hi,
-            &mut hmask,
-            m4,
-            &mut sumi_lo,
-            &mut sumi_hi,
-        );
+        for t in 0..n_tile {
+            let yb = &qrows[t * n_blocks + i];
+            let d = yb.d * d_w;
+            let dmin = -yb.d * dmin_w;
 
-        acc_lo = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo);
-        acc_hi = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi);
+            let bsums_lo = load16(yb.bsums.as_ptr().cast());
+            let bsums_hi = load16(yb.bsums.as_ptr().add(8).cast());
+            let q8s = hadd_epi16(bsums_lo, bsums_hi);
+            let prod = madd_epi16(mins, q8s);
+            let extract = hsum_i32x4(prod) as f32;
+            summs[t] = fmaf32(dmin, extract, summs[t]);
+
+            let mut hmask = u8x16_splat(1);
+            let mut sumi_lo = i32x4_splat(0);
+            let mut sumi_hi = i32x4_splat(0);
+            let q8 = yb.qs.as_ptr();
+
+            q5k_chunk::<0, 1>(
+                scales,
+                sh0,
+                sh1,
+                q5,
+                q8,
+                hbits_lo,
+                hbits_hi,
+                &mut hmask,
+                m4,
+                &mut sumi_lo,
+                &mut sumi_hi,
+            );
+            q5k_chunk::<2, 3>(
+                scales,
+                sh2,
+                sh3,
+                q5.add(32),
+                q8.add(64),
+                hbits_lo,
+                hbits_hi,
+                &mut hmask,
+                m4,
+                &mut sumi_lo,
+                &mut sumi_hi,
+            );
+            q5k_chunk::<4, 5>(
+                scales,
+                sh4,
+                sh5,
+                q5.add(64),
+                q8.add(128),
+                hbits_lo,
+                hbits_hi,
+                &mut hmask,
+                m4,
+                &mut sumi_lo,
+                &mut sumi_hi,
+            );
+            q5k_chunk::<6, 7>(
+                scales,
+                sh6,
+                sh7,
+                q5.add(96),
+                q8.add(192),
+                hbits_lo,
+                hbits_hi,
+                &mut hmask,
+                m4,
+                &mut sumi_lo,
+                &mut sumi_hi,
+            );
+
+            acc_lo[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo[t]);
+            acc_hi[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi[t]);
+        }
     }
 
-    hsum_float_8(acc_lo, acc_hi) + summs
+    for t in 0..n_tile {
+        out[t] = hsum_float_8(acc_lo[t], acc_hi[t]) + summs[t];
+    }
 }
 
 /// One QK_K/64 chunk. `BIT0`/`BIT1` are the AVX2 `_mm256_srli_epi16` immediates.
@@ -257,11 +293,15 @@ unsafe fn q5k_chunk<const BIT0: u32, const BIT1: u32>(
 
     *sumi_lo = i32x4_add(
         *sumi_lo,
-        q5k_half::<BIT0, BIT1>(scale_0, scale_1, q5_lo, q8_0_lo, q8_1_lo, hbits_lo, hmask0, hmask1, m4),
+        q5k_half::<BIT0, BIT1>(
+            scale_0, scale_1, q5_lo, q8_0_lo, q8_1_lo, hbits_lo, hmask0, hmask1, m4,
+        ),
     );
     *sumi_hi = i32x4_add(
         *sumi_hi,
-        q5k_half::<BIT0, BIT1>(scale_0, scale_1, q5_hi, q8_0_hi, q8_1_hi, hbits_hi, hmask0, hmask1, m4),
+        q5k_half::<BIT0, BIT1>(
+            scale_0, scale_1, q5_hi, q8_0_hi, q8_1_hi, hbits_hi, hmask0, hmask1, m4,
+        ),
     );
 }
 
@@ -292,7 +332,23 @@ fn q5k_half<const BIT0: u32, const BIT1: u32>(
 
 /// llama.cpp `ggml_vec_dot_q6_K_q8_K` AVX2 (`quants.c` ~2129) as 2× SIMD128.
 pub unsafe fn vec_dot_q6_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
-    debug_assert_eq!(w.len(), y.len() * Q6_K_BYTES);
+    let mut out = [0.0f32; 1];
+    vec_dot_q6_k_q8_k_tile(w, y, 1, y.len(), &mut out);
+    out[0]
+}
+
+/// Sequence-tiled Q6_K×Q8_K. Weight superblock unpacked once per tile.
+pub unsafe fn vec_dot_q6_k_q8_k_tile(
+    w: &[u8],
+    qrows: &[BlockQ8K],
+    n_tile: usize,
+    n_blocks: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(w.len(), n_blocks * Q6_K_BYTES);
+    debug_assert_eq!(qrows.len(), n_tile * n_blocks);
+    debug_assert!(n_tile <= GEMM_TILE_TOKENS);
+    debug_assert!(n_tile <= out.len());
 
     #[rustfmt::skip]
     const K_SHUFFLE: [u8; 128] = [
@@ -309,54 +365,157 @@ pub unsafe fn vec_dot_q6_k_q8_k(w: &[u8], y: &[BlockQ8K]) -> f32 {
     let m4 = u8x16_splat(0x0F);
     let m2 = u8x16_splat(3);
     let m32s = u8x16_splat(32);
-    let mut acc_lo = f32x4_splat(0.0);
-    let mut acc_hi = f32x4_splat(0.0);
+    let mut acc_lo = [f32x4_splat(0.0); GEMM_TILE_TOKENS];
+    let mut acc_hi = [f32x4_splat(0.0); GEMM_TILE_TOKENS];
 
-    for (i, yb) in y.iter().enumerate() {
+    for i in 0..n_blocks {
         let block = &w[i * Q6_K_BYTES..(i + 1) * Q6_K_BYTES];
-        let d = yb.d * f16_to_f32(u16::from_le_bytes([block[208], block[209]]));
+        let d_w = f16_to_f32(u16::from_le_bytes([block[208], block[209]]));
         let q4 = block[0..128].as_ptr();
         let qh = block[128..192].as_ptr();
-        let q8 = yb.qs.as_ptr();
         let scales = load16(block[192..208].as_ptr());
 
-        let mut sumi_lo = i32x4_splat(0);
-        let mut sumi_hi = i32x4_splat(0);
-        let mut is = 0usize;
+        for t in 0..n_tile {
+            let yb = &qrows[t * n_blocks + i];
+            let d = yb.d * d_w;
+            let q8 = yb.qs.as_ptr();
 
-        for j in 0..QK_K / 128 {
-            let scale_0 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 0) * 16)));
-            let scale_1 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 1) * 16)));
-            let scale_2 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 2) * 16)));
-            let scale_3 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 3) * 16)));
-            is += 4;
+            let mut sumi_lo = i32x4_splat(0);
+            let mut sumi_hi = i32x4_splat(0);
+            let mut is = 0usize;
 
-            let ql1_lo = load16(q4.add(j * 64));
-            let ql1_hi = load16(q4.add(j * 64 + 16));
-            let ql2_lo = load16(q4.add(j * 64 + 32));
-            let ql2_hi = load16(q4.add(j * 64 + 48));
-            let qh_lo = load16(qh.add(j * 32));
-            let qh_hi = load16(qh.add(j * 32 + 16));
+            for j in 0..QK_K / 128 {
+                let scale_0 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 0) * 16)));
+                let scale_1 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 1) * 16)));
+                let scale_2 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 2) * 16)));
+                let scale_3 = i8x16_swizzle(scales, load16(K_SHUFFLE.as_ptr().add((is + 3) * 16)));
+                is += 4;
 
-            // q4_0: low nibble of ql1, qh bits 0..1. First 16 → scale[even]/sumi_lo.
-            q6_acc16(ql1_lo, qh_lo, load16_i8(q8.add(j * 128)), scale_0, m4, m2, m32s, 0, false, true, &mut sumi_lo);
-            q6_acc16(ql1_hi, qh_hi, load16_i8(q8.add(j * 128 + 16)), scale_0, m4, m2, m32s, 0, false, false, &mut sumi_hi);
-            // q4_1: low nibble of ql2, qh bits 2..3
-            q6_acc16(ql2_lo, qh_lo, load16_i8(q8.add(j * 128 + 32)), scale_1, m4, m2, m32s, 2, false, true, &mut sumi_lo);
-            q6_acc16(ql2_hi, qh_hi, load16_i8(q8.add(j * 128 + 48)), scale_1, m4, m2, m32s, 2, false, false, &mut sumi_hi);
-            // q4_2: high nibble of ql1, qh bits 4..5
-            q6_acc16(ql1_lo, qh_lo, load16_i8(q8.add(j * 128 + 64)), scale_2, m4, m2, m32s, 4, true, true, &mut sumi_lo);
-            q6_acc16(ql1_hi, qh_hi, load16_i8(q8.add(j * 128 + 80)), scale_2, m4, m2, m32s, 4, true, false, &mut sumi_hi);
-            // q4_3: high nibble of ql2, qh bits 6..7
-            q6_acc16(ql2_lo, qh_lo, load16_i8(q8.add(j * 128 + 96)), scale_3, m4, m2, m32s, 6, true, true, &mut sumi_lo);
-            q6_acc16(ql2_hi, qh_hi, load16_i8(q8.add(j * 128 + 112)), scale_3, m4, m2, m32s, 6, true, false, &mut sumi_hi);
+                let ql1_lo = load16(q4.add(j * 64));
+                let ql1_hi = load16(q4.add(j * 64 + 16));
+                let ql2_lo = load16(q4.add(j * 64 + 32));
+                let ql2_hi = load16(q4.add(j * 64 + 48));
+                let qh_lo = load16(qh.add(j * 32));
+                let qh_hi = load16(qh.add(j * 32 + 16));
+
+                // q4_0: low nibble of ql1, qh bits 0..1. First 16 → scale[even]/sumi_lo.
+                q6_acc16(
+                    ql1_lo,
+                    qh_lo,
+                    load16_i8(q8.add(j * 128)),
+                    scale_0,
+                    m4,
+                    m2,
+                    m32s,
+                    0,
+                    false,
+                    true,
+                    &mut sumi_lo,
+                );
+                q6_acc16(
+                    ql1_hi,
+                    qh_hi,
+                    load16_i8(q8.add(j * 128 + 16)),
+                    scale_0,
+                    m4,
+                    m2,
+                    m32s,
+                    0,
+                    false,
+                    false,
+                    &mut sumi_hi,
+                );
+                // q4_1: low nibble of ql2, qh bits 2..3
+                q6_acc16(
+                    ql2_lo,
+                    qh_lo,
+                    load16_i8(q8.add(j * 128 + 32)),
+                    scale_1,
+                    m4,
+                    m2,
+                    m32s,
+                    2,
+                    false,
+                    true,
+                    &mut sumi_lo,
+                );
+                q6_acc16(
+                    ql2_hi,
+                    qh_hi,
+                    load16_i8(q8.add(j * 128 + 48)),
+                    scale_1,
+                    m4,
+                    m2,
+                    m32s,
+                    2,
+                    false,
+                    false,
+                    &mut sumi_hi,
+                );
+                // q4_2: high nibble of ql1, qh bits 4..5
+                q6_acc16(
+                    ql1_lo,
+                    qh_lo,
+                    load16_i8(q8.add(j * 128 + 64)),
+                    scale_2,
+                    m4,
+                    m2,
+                    m32s,
+                    4,
+                    true,
+                    true,
+                    &mut sumi_lo,
+                );
+                q6_acc16(
+                    ql1_hi,
+                    qh_hi,
+                    load16_i8(q8.add(j * 128 + 80)),
+                    scale_2,
+                    m4,
+                    m2,
+                    m32s,
+                    4,
+                    true,
+                    false,
+                    &mut sumi_hi,
+                );
+                // q4_3: high nibble of ql2, qh bits 6..7
+                q6_acc16(
+                    ql2_lo,
+                    qh_lo,
+                    load16_i8(q8.add(j * 128 + 96)),
+                    scale_3,
+                    m4,
+                    m2,
+                    m32s,
+                    6,
+                    true,
+                    true,
+                    &mut sumi_lo,
+                );
+                q6_acc16(
+                    ql2_hi,
+                    qh_hi,
+                    load16_i8(q8.add(j * 128 + 112)),
+                    scale_3,
+                    m4,
+                    m2,
+                    m32s,
+                    6,
+                    true,
+                    false,
+                    &mut sumi_hi,
+                );
+            }
+
+            acc_lo[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo[t]);
+            acc_hi[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi[t]);
         }
-
-        acc_lo = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo);
-        acc_hi = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi);
     }
 
-    hsum_float_8(acc_lo, acc_hi)
+    for t in 0..n_tile {
+        out[t] = hsum_float_8(acc_lo[t], acc_hi[t]);
+    }
 }
 
 /// 16 q6 values: nibble from `ql`, 2 high bits from `qh` shifted by `qh_shift`.
@@ -405,121 +564,159 @@ fn q6_acc16(
 }
 
 /// Bit-exact SIMD128 `ggml_gemv_q4_K_8x8_q8_K` (same integer products + mul+add
-/// as the portable GEMV — do not switch this to FMA).
+/// as the portable GEMV — do not switch this to FMA). One-token wrapper.
 pub fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut [f32]) {
+    gemm_q4_k_8x8_q8_k(repack, y, 1, n_out, out);
+}
+
+/// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. Same integer products and
+/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Each `block_q4_Kx8` — scales and
+/// the 1024-byte `qs` payload — is read once per tile (`k` outer, tokens
+/// inner). Do not switch this to FMA.
+pub fn gemm_q4_k_8x8_q8_k(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    n_tokens: usize,
+    n_out: usize,
+    out: &mut [f32],
+) {
     const KMASK1: u32 = 0x3f3f3f3f;
     const KMASK2: u32 = 0x0f0f0f0f;
     const KMASK3: u32 = 0x03030303;
-    let n_blocks = y.len();
+    debug_assert!(n_tokens > 0);
+    let n_blocks = qrows.len() / n_tokens;
     debug_assert_eq!(repack.len(), (n_out / 8) * n_blocks * Q4_KX8_BYTES);
-    debug_assert_eq!(out.len(), n_out);
+    debug_assert_eq!(out.len(), n_tokens * n_out);
     let n_groups = n_out / 8;
     let m4 = i16x8_splat(0x0F);
 
-    for x in 0..n_groups {
-        let mut sumf = [0.0f32; 8];
-        let mut sum_minf = [0.0f32; 8];
-        for l in 0..n_blocks {
-            let off = (x * n_blocks + l) * Q4_KX8_BYTES;
-            let blk = &repack[off..off + Q4_KX8_BYTES];
-            let mut d = [0.0f32; 8];
-            let mut dmin = [0.0f32; 8];
-            for j in 0..8 {
-                d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
-                dmin[j] = f16_to_f32(u16::from_le_bytes([
-                    blk[16 + j * 2],
-                    blk[16 + j * 2 + 1],
-                ]));
-            }
-            let scales = &blk[32..128];
-            let qs = &blk[128..];
-            let yb = &y[l];
+    for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
+        let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
+        for x in 0..n_groups {
+            let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+            let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+            for l in 0..n_blocks {
+                let off = (x * n_blocks + l) * Q4_KX8_BYTES;
+                let blk = &repack[off..off + Q4_KX8_BYTES];
+                let mut d = [0.0f32; 8];
+                let mut dmin = [0.0f32; 8];
+                for j in 0..8 {
+                    d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
+                    dmin[j] =
+                        f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
+                }
+                let scales = &blk[32..128];
+                let qs = &blk[128..];
 
-            let mut utmp = [0u32; 32];
-            for sb in 0..8 {
-                let base = sb * 12;
-                utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
-                utmp[sb * 4 + 1] =
-                    u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
-                utmp[sb * 4 + 2] =
-                    u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
-                utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & KMASK2)
-                    | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
-                let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
-                utmp[sb * 4 + 1] =
-                    (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
-                utmp[sb * 4 + 2] = uaux_0;
-                utmp[sb * 4] &= KMASK1;
-            }
-            let mut ub = [0u8; 128];
-            for i in 0..32 {
-                ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
-            }
+                let mut utmp = [0u32; 32];
+                for sb in 0..8 {
+                    let base = sb * 12;
+                    utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
+                    utmp[sb * 4 + 1] =
+                        u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
+                    utmp[sb * 4 + 2] =
+                        u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
+                    utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & KMASK2)
+                        | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
+                    let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
+                    utmp[sb * 4 + 1] =
+                        (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
+                    utmp[sb * 4 + 2] = uaux_0;
+                    utmp[sb * 4] &= KMASK1;
+                }
+                let mut ub = [0u8; 128];
+                for i in 0..32 {
+                    ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
+                }
 
-            let mut iacc = [0i32; 8];
-            unsafe {
+                // Read qs once per superblock (k outer), apply to every token.
+                // Same integer products as the per-token GEMV; float mul+add
+                // still runs once per superblock after iacc is complete.
+                let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
                 for k in 0..16 {
                     let scale_base = (k / 4) * 32;
-                    let a_off = (k >> 2) * 64 + (k % 4) * 8;
-                    let a0 = i16x8_extend_low_i8x16(u64x2(
-                        ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
-                        0,
-                    ));
-                    let a1 = i16x8_extend_low_i8x16(u64x2(
-                        ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
-                        0,
-                    ));
-                    // 2 columns at a time (16 qs bytes).
-                    for pair in 0..4 {
-                        let j = pair * 2;
-                        let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
-                        let qs_lo = u16x8_extend_low_u8x16(packed);
-                        let qs_hi = u16x8_extend_high_u8x16(packed);
-                        let v0_lo = v128_and(qs_lo, m4);
-                        let v0_hi = v128_and(qs_hi, m4);
-                        let v1_lo = u16x8_shr(qs_lo, 4);
-                        let v1_hi = u16x8_shr(qs_hi, 4);
-                        let s0a = i32::from(ub[scale_base + j]);
-                        let s1a = i32::from(ub[scale_base + 16 + j]);
-                        let s0b = i32::from(ub[scale_base + j + 1]);
-                        let s1b = i32::from(ub[scale_base + 16 + j + 1]);
-                        let sum0a = hsum_i16x8(i16x8_mul(v0_lo, a0));
-                        let sum1a = hsum_i16x8(i16x8_mul(v1_lo, a1));
-                        let sum0b = hsum_i16x8(i16x8_mul(v0_hi, a0));
-                        let sum1b = hsum_i16x8(i16x8_mul(v1_hi, a1));
-                        iacc[j] += s0a * sum0a + s1a * sum1a;
-                        iacc[j + 1] += s0b * sum0b + s1b * sum1b;
+                    let mut v0_lo = [m4; 4];
+                    let mut v0_hi = [m4; 4];
+                    let mut v1_lo = [m4; 4];
+                    let mut v1_hi = [m4; 4];
+                    let mut s0a = [0i32; 4];
+                    let mut s1a = [0i32; 4];
+                    let mut s0b = [0i32; 4];
+                    let mut s1b = [0i32; 4];
+                    unsafe {
+                        for pair in 0..4 {
+                            let j = pair * 2;
+                            let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
+                            let qs_lo = u16x8_extend_low_u8x16(packed);
+                            let qs_hi = u16x8_extend_high_u8x16(packed);
+                            v0_lo[pair] = v128_and(qs_lo, m4);
+                            v0_hi[pair] = v128_and(qs_hi, m4);
+                            v1_lo[pair] = u16x8_shr(qs_lo, 4);
+                            v1_hi[pair] = u16x8_shr(qs_hi, 4);
+                            s0a[pair] = i32::from(ub[scale_base + j]);
+                            s1a[pair] = i32::from(ub[scale_base + 16 + j]);
+                            s0b[pair] = i32::from(ub[scale_base + j + 1]);
+                            s1b[pair] = i32::from(ub[scale_base + 16 + j + 1]);
+                        }
+                    }
+                    for ti in 0..tn {
+                        let yb = &qrows[(t0 + ti) * n_blocks + l];
+                        let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                        unsafe {
+                            let a0 = i16x8_extend_low_i8x16(u64x2(
+                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
+                                0,
+                            ));
+                            let a1 = i16x8_extend_low_i8x16(u64x2(
+                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
+                                0,
+                            ));
+                            for pair in 0..4 {
+                                let j = pair * 2;
+                                let sum0a = hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
+                                let sum1a = hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
+                                let sum0b = hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
+                                let sum1b = hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
+                                iacc[ti][j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
+                                iacc[ti][j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
+                            }
+                        }
+                    }
+                }
+                for ti in 0..tn {
+                    let yb = &qrows[(t0 + ti) * n_blocks + l];
+                    let mut iacc_min = [0i32; 8];
+                    for sb in 0..8 {
+                        let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
+                        let mins = unsafe {
+                            u16x8_extend_low_u8x16(u64x2(
+                                ptr::read_unaligned(ub.as_ptr().add(8 + sb * 16).cast::<u64>()),
+                                0,
+                            ))
+                        };
+                        let prod_lo = i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
+                        let prod_hi = i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
+                        iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
+                        iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
+                        iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
+                        iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
+                        iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
+                        iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
+                        iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
+                        iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
+                    }
+                    for j in 0..8 {
+                        let ds = d[j] * yb.d;
+                        sumf[ti][j] += iacc[ti][j] as f32 * ds;
+                        sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
                     }
                 }
             }
-            let mut iacc_min = [0i32; 8];
-            for sb in 0..8 {
-                let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
-                let mins = unsafe {
-                    u16x8_extend_low_u8x16(u64x2(
-                        ptr::read_unaligned(ub.as_ptr().add(8 + sb * 16).cast::<u64>()),
-                        0,
-                    ))
-                };
-                let prod_lo = i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
-                let prod_hi = i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
-                iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
-                iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
-                iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
-                iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
-                iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
-                iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
-                iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
-                iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
+            for ti in 0..tn {
+                for j in 0..8 {
+                    out[(t0 + ti) * n_out + x * 8 + j] = sumf[ti][j] - sum_minf[ti][j];
+                }
             }
-            for j in 0..8 {
-                let ds = d[j] * yb.d;
-                sumf[j] += iacc[j] as f32 * ds;
-                sum_minf[j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
-            }
-        }
-        for j in 0..8 {
-            out[x * 8 + j] = sumf[j] - sum_minf[j];
         }
     }
 }
