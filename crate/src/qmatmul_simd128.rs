@@ -92,10 +92,12 @@ fn hsum_i32x4(v: v128) -> i32 {
 }
 
 /// Horizontal sum of 8 i16 products (fits i32).
-/// Bisect (a): `i32x4.dot` + add, not extend-low/high. Same integer total.
 #[inline(always)]
 fn hsum_i16x8(v: v128) -> i32 {
-    hsum_i32x4(i32x4_dot_i16x8(v, i16x8_splat(1)))
+    hsum_i32x4(i32x4_add(
+        i32x4_extend_low_i16x8(v),
+        i32x4_extend_high_i16x8(v),
+    ))
 }
 
 /// llama.cpp `ggml_vec_dot_q5_K_q8_K` AVX2 (`quants.c` ~1919) as 2× SIMD128.
@@ -631,53 +633,57 @@ pub fn gemm_q4_k_8x8_q8_k(
                 // Same integer products as the per-token GEMV; float mul+add
                 // still runs once per superblock after iacc is complete.
                 let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
-                for k in 0..16 {
-                    let scale_base = (k / 4) * 32;
-                    let mut v0_lo = [m4; 4];
-                    let mut v0_hi = [m4; 4];
-                    let mut v1_lo = [m4; 4];
-                    let mut v1_hi = [m4; 4];
-                    let mut s0a = [0i32; 4];
-                    let mut s1a = [0i32; 4];
-                    let mut s0b = [0i32; 4];
-                    let mut s1b = [0i32; 4];
-                    unsafe {
-                        for pair in 0..4 {
-                            let j = pair * 2;
-                            let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
-                            let qs_lo = u16x8_extend_low_u8x16(packed);
-                            let qs_hi = u16x8_extend_high_u8x16(packed);
-                            v0_lo[pair] = v128_and(qs_lo, m4);
-                            v0_hi[pair] = v128_and(qs_hi, m4);
-                            v1_lo[pair] = u16x8_shr(qs_lo, 4);
-                            v1_hi[pair] = u16x8_shr(qs_hi, 4);
-                            s0a[pair] = i32::from(ub[scale_base + j]);
-                            s1a[pair] = i32::from(ub[scale_base + 16 + j]);
-                            s0b[pair] = i32::from(ub[scale_base + j + 1]);
-                            s1b[pair] = i32::from(ub[scale_base + 16 + j + 1]);
-                        }
-                    }
-                    for ti in 0..tn {
-                        let yb = &qrows[(t0 + ti) * n_blocks + l];
-                        let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                // Bisect (b): #40 hsum_i16x8; i32 scale once per 32-element group.
+                for batch in 0..4 {
+                    let mut acc0 = [[0i32; 8]; GEMM_TILE_TOKENS];
+                    let mut acc1 = [[0i32; 8]; GEMM_TILE_TOKENS];
+                    for kk in 0..4 {
+                        let k = batch * 4 + kk;
+                        let mut v0_lo = [m4; 4];
+                        let mut v0_hi = [m4; 4];
+                        let mut v1_lo = [m4; 4];
+                        let mut v1_hi = [m4; 4];
                         unsafe {
-                            let a0 = i16x8_extend_low_i8x16(u64x2(
-                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
-                                0,
-                            ));
-                            let a1 = i16x8_extend_low_i8x16(u64x2(
-                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
-                                0,
-                            ));
                             for pair in 0..4 {
                                 let j = pair * 2;
-                                let sum0a = hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
-                                let sum1a = hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
-                                let sum0b = hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
-                                let sum1b = hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
-                                iacc[ti][j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
-                                iacc[ti][j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
+                                let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
+                                let qs_lo = u16x8_extend_low_u8x16(packed);
+                                let qs_hi = u16x8_extend_high_u8x16(packed);
+                                v0_lo[pair] = v128_and(qs_lo, m4);
+                                v0_hi[pair] = v128_and(qs_hi, m4);
+                                v1_lo[pair] = u16x8_shr(qs_lo, 4);
+                                v1_hi[pair] = u16x8_shr(qs_hi, 4);
                             }
+                        }
+                        for ti in 0..tn {
+                            let yb = &qrows[(t0 + ti) * n_blocks + l];
+                            let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                            unsafe {
+                                let a0 = i16x8_extend_low_i8x16(u64x2(
+                                    ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
+                                    0,
+                                ));
+                                let a1 = i16x8_extend_low_i8x16(u64x2(
+                                    ptr::read_unaligned(
+                                        yb.qs.as_ptr().add(a_off + 32).cast::<u64>(),
+                                    ),
+                                    0,
+                                ));
+                                for pair in 0..4 {
+                                    let j = pair * 2;
+                                    acc0[ti][j] += hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
+                                    acc0[ti][j + 1] += hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
+                                    acc1[ti][j] += hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
+                                    acc1[ti][j + 1] += hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
+                                }
+                            }
+                        }
+                    }
+                    let scale_base = batch * 32;
+                    for ti in 0..tn {
+                        for j in 0..8 {
+                            iacc[ti][j] += i32::from(ub[scale_base + j]) * acc0[ti][j]
+                                + i32::from(ub[scale_base + 16 + j]) * acc1[ti][j];
                         }
                     }
                 }
