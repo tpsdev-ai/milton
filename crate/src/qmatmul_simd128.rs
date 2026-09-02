@@ -91,79 +91,15 @@ fn hsum_i32x4(v: v128) -> i32 {
         + i32x4_extract_lane::<3>(v)
 }
 
-/// Byte broadcast + one widen: one q8 value across 8 i16 lanes.
+/// Sum of 8 i16 products as 4 i32 pair-sums (same total as extend+add).
 #[inline(always)]
-fn splat_i8_as_i16(q: i8) -> v128 {
-    i16x8_extend_low_i8x16(i8x16_splat(q))
+fn acc_sum8(prod: v128, acc: &mut v128) {
+    *acc = i32x4_add(*acc, i32x4_dot_i16x8(prod, i16x8_splat(1)));
 }
 
 #[inline(always)]
-fn acc_i16_products(prod: v128, acc_lo: &mut v128, acc_hi: &mut v128) {
-    *acc_lo = i32x4_add(*acc_lo, i32x4_extend_low_i16x8(prod));
-    *acc_hi = i32x4_add(*acc_hi, i32x4_extend_high_i16x8(prod));
-}
-
-#[inline(always)]
-fn unpacklo_i16(a: v128, b: v128) -> v128 {
-    i16x8_shuffle::<0, 8, 1, 9, 2, 10, 3, 11>(a, b)
-}
-
-#[inline(always)]
-fn unpackhi_i16(a: v128, b: v128) -> v128 {
-    i16x8_shuffle::<4, 12, 5, 13, 6, 14, 7, 15>(a, b)
-}
-
-#[inline(always)]
-fn unpacklo_i32(a: v128, b: v128) -> v128 {
-    i32x4_shuffle::<0, 4, 1, 5>(a, b)
-}
-
-#[inline(always)]
-fn unpackhi_i32(a: v128, b: v128) -> v128 {
-    i32x4_shuffle::<2, 6, 3, 7>(a, b)
-}
-
-#[inline(always)]
-fn unpacklo_i64(a: v128, b: v128) -> v128 {
-    i32x4_shuffle::<0, 1, 4, 5>(a, b)
-}
-
-#[inline(always)]
-fn unpackhi_i64(a: v128, b: v128) -> v128 {
-    i32x4_shuffle::<2, 3, 6, 7>(a, b)
-}
-
-/// 8×8 i16 transpose. Columns in → positions out (lanes become the 8 columns).
-#[inline(always)]
-fn transpose_i16x8_8(c: [v128; 8]) -> [v128; 8] {
-    let t0 = unpacklo_i16(c[0], c[1]);
-    let t1 = unpackhi_i16(c[0], c[1]);
-    let t2 = unpacklo_i16(c[2], c[3]);
-    let t3 = unpackhi_i16(c[2], c[3]);
-    let t4 = unpacklo_i16(c[4], c[5]);
-    let t5 = unpackhi_i16(c[4], c[5]);
-    let t6 = unpacklo_i16(c[6], c[7]);
-    let t7 = unpackhi_i16(c[6], c[7]);
-
-    let u0 = unpacklo_i32(t0, t2);
-    let u1 = unpackhi_i32(t0, t2);
-    let u2 = unpacklo_i32(t1, t3);
-    let u3 = unpackhi_i32(t1, t3);
-    let u4 = unpacklo_i32(t4, t6);
-    let u5 = unpackhi_i32(t4, t6);
-    let u6 = unpacklo_i32(t5, t7);
-    let u7 = unpackhi_i32(t5, t7);
-
-    [
-        unpacklo_i64(u0, u4),
-        unpackhi_i64(u0, u4),
-        unpacklo_i64(u1, u5),
-        unpackhi_i64(u1, u5),
-        unpacklo_i64(u2, u6),
-        unpackhi_i64(u2, u6),
-        unpacklo_i64(u3, u7),
-        unpackhi_i64(u3, u7),
-    ]
+unsafe fn widen8_i8(p: *const i8) -> v128 {
+    i16x8_extend_low_i8x16(u64x2(ptr::read_unaligned(p.cast::<u64>()), 0))
 }
 
 /// Signed i8×i8 adjacent pair-add → 8 i16. Sat never fires for Q6_K
@@ -544,17 +480,19 @@ pub fn gemm_q4_k_8x8_q8_k(
 /// the single tile definition.
 const Q4K_COL_GROUP_CHUNK: usize = 4;
 
-/// One `block_q4_Kx8` with qs transposed so lanes = columns. Bounds: `qs` is
-/// the 1024-byte payload (`16 k × 64 B`); `ub` is the 128-byte unpacked
-/// scale/min header. Same layout #40 argued.
+/// One `block_q4_Kx8`. qs stays in the #40 pair layout (2 columns × 8
+/// nibbles per load) — no 8×8 transpose. Bounds: 1024-byte `qs`, 128-byte
+/// unpacked scale/min header, same as #40.
 #[derive(Clone, Copy)]
 struct Q4kUnpacked {
     d: [f32; 8],
     dmin: [f32; 8],
     ub: [u8; 128],
-    /// `v0[k][i]` = 8 columns' low-nibble at position `i` of stripe `k`.
-    v0: [[v128; 8]; 16],
-    v1: [[v128; 8]; 16],
+    /// `[k][pair]` = column `2*pair` (lo) / `2*pair+1` (hi), 8 i16 nibbles.
+    v0_lo: [[v128; 4]; 16],
+    v0_hi: [[v128; 4]; 16],
+    v1_lo: [[v128; 4]; 16],
+    v1_hi: [[v128; 4]; 16],
 }
 
 impl Q4kUnpacked {
@@ -563,8 +501,10 @@ impl Q4kUnpacked {
             d: [0.0; 8],
             dmin: [0.0; 8],
             ub: [0; 128],
-            v0: [[i16x8_splat(0); 8]; 16],
-            v1: [[i16x8_splat(0); 8]; 16],
+            v0_lo: [[i16x8_splat(0); 4]; 16],
+            v0_hi: [[i16x8_splat(0); 4]; 16],
+            v1_lo: [[i16x8_splat(0); 4]; 16],
+            v1_hi: [[i16x8_splat(0); 4]; 16],
         }
     }
 
@@ -599,33 +539,33 @@ impl Q4kUnpacked {
             ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
         }
 
-        let mut v0 = [[i16x8_splat(0); 8]; 16];
-        let mut v1 = [[i16x8_splat(0); 8]; 16];
+        let mut v0_lo = [[i16x8_splat(0); 4]; 16];
+        let mut v0_hi = [[i16x8_splat(0); 4]; 16];
+        let mut v1_lo = [[i16x8_splat(0); 4]; 16];
+        let mut v1_hi = [[i16x8_splat(0); 4]; 16];
         unsafe {
             for k in 0..16 {
-                let mut cols0 = [i16x8_splat(0); 8];
-                let mut cols1 = [i16x8_splat(0); 8];
                 for pair in 0..4 {
                     // 16 bytes = 2 columns × 8 packed nibbles. In-bounds:
                     // k*64 + pair*16 ≤ 15*64 + 48 = 1008, +16 = 1024.
                     let packed = load16(qs.as_ptr().add(k * 64 + pair * 16));
                     let qs_lo = u16x8_extend_low_u8x16(packed);
                     let qs_hi = u16x8_extend_high_u8x16(packed);
-                    cols0[pair * 2] = v128_and(qs_lo, m4);
-                    cols0[pair * 2 + 1] = v128_and(qs_hi, m4);
-                    cols1[pair * 2] = u16x8_shr(qs_lo, 4);
-                    cols1[pair * 2 + 1] = u16x8_shr(qs_hi, 4);
+                    v0_lo[k][pair] = v128_and(qs_lo, m4);
+                    v0_hi[k][pair] = v128_and(qs_hi, m4);
+                    v1_lo[k][pair] = u16x8_shr(qs_lo, 4);
+                    v1_hi[k][pair] = u16x8_shr(qs_hi, 4);
                 }
-                v0[k] = transpose_i16x8_8(cols0);
-                v1[k] = transpose_i16x8_8(cols1);
             }
         }
         Self {
             d,
             dmin,
             ub,
-            v0,
-            v1,
+            v0_lo,
+            v0_hi,
+            v1_lo,
+            v1_hi,
         }
     }
 
@@ -633,68 +573,31 @@ impl Q4kUnpacked {
     /// one i32 scale mul per 32-element group (not 4× per 8-product chunk).
     /// f32 scale stays with the caller, once per superblock.
     fn dot_q8k(&self, yb: &BlockQ8K) -> ([i32; 8], [i32; 8]) {
-        let mut iacc_lo = i32x4_splat(0);
-        let mut iacc_hi = i32x4_splat(0);
-        for batch in 0..4 {
-            let mut acc0_lo = i32x4_splat(0);
-            let mut acc0_hi = i32x4_splat(0);
-            let mut acc1_lo = i32x4_splat(0);
-            let mut acc1_hi = i32x4_splat(0);
-            for kk in 0..4 {
-                let k = batch * 4 + kk;
-                let a_off = (k >> 2) * 64 + (k % 4) * 8;
-                for i in 0..8 {
-                    let a0 = splat_i8_as_i16(yb.qs[a_off + i]);
-                    let a1 = splat_i8_as_i16(yb.qs[a_off + 32 + i]);
-                    acc_i16_products(i16x8_mul(self.v0[k][i], a0), &mut acc0_lo, &mut acc0_hi);
-                    acc_i16_products(i16x8_mul(self.v1[k][i], a1), &mut acc1_lo, &mut acc1_hi);
+        let mut iacc = [0i32; 8];
+        unsafe {
+            for batch in 0..4 {
+                let mut acc0 = [i32x4_splat(0); 8];
+                let mut acc1 = [i32x4_splat(0); 8];
+                for kk in 0..4 {
+                    let k = batch * 4 + kk;
+                    let a_off = (k >> 2) * 64 + (k % 4) * 8;
+                    // 8 q8 values; a_off+32+7 ≤ 255 (k≤15).
+                    let a0 = widen8_i8(yb.qs.as_ptr().add(a_off));
+                    let a1 = widen8_i8(yb.qs.as_ptr().add(a_off + 32));
+                    for pair in 0..4 {
+                        acc_sum8(i16x8_mul(self.v0_lo[k][pair], a0), &mut acc0[pair * 2]);
+                        acc_sum8(i16x8_mul(self.v0_hi[k][pair], a0), &mut acc0[pair * 2 + 1]);
+                        acc_sum8(i16x8_mul(self.v1_lo[k][pair], a1), &mut acc1[pair * 2]);
+                        acc_sum8(i16x8_mul(self.v1_hi[k][pair], a1), &mut acc1[pair * 2 + 1]);
+                    }
+                }
+                let scale_base = batch * 32;
+                for j in 0..8 {
+                    iacc[j] += i32::from(self.ub[scale_base + j]) * hsum_i32x4(acc0[j])
+                        + i32::from(self.ub[scale_base + 16 + j]) * hsum_i32x4(acc1[j]);
                 }
             }
-            let scale_base = batch * 32;
-            let s0_lo = i32x4(
-                i32::from(self.ub[scale_base]),
-                i32::from(self.ub[scale_base + 1]),
-                i32::from(self.ub[scale_base + 2]),
-                i32::from(self.ub[scale_base + 3]),
-            );
-            let s0_hi = i32x4(
-                i32::from(self.ub[scale_base + 4]),
-                i32::from(self.ub[scale_base + 5]),
-                i32::from(self.ub[scale_base + 6]),
-                i32::from(self.ub[scale_base + 7]),
-            );
-            let s1_lo = i32x4(
-                i32::from(self.ub[scale_base + 16]),
-                i32::from(self.ub[scale_base + 17]),
-                i32::from(self.ub[scale_base + 18]),
-                i32::from(self.ub[scale_base + 19]),
-            );
-            let s1_hi = i32x4(
-                i32::from(self.ub[scale_base + 20]),
-                i32::from(self.ub[scale_base + 21]),
-                i32::from(self.ub[scale_base + 22]),
-                i32::from(self.ub[scale_base + 23]),
-            );
-            iacc_lo = i32x4_add(
-                iacc_lo,
-                i32x4_add(i32x4_mul(acc0_lo, s0_lo), i32x4_mul(acc1_lo, s1_lo)),
-            );
-            iacc_hi = i32x4_add(
-                iacc_hi,
-                i32x4_add(i32x4_mul(acc0_hi, s0_hi), i32x4_mul(acc1_hi, s1_hi)),
-            );
         }
-
-        let iacc = [
-            i32x4_extract_lane::<0>(iacc_lo),
-            i32x4_extract_lane::<1>(iacc_lo),
-            i32x4_extract_lane::<2>(iacc_lo),
-            i32x4_extract_lane::<3>(iacc_lo),
-            i32x4_extract_lane::<0>(iacc_hi),
-            i32x4_extract_lane::<1>(iacc_hi),
-            i32x4_extract_lane::<2>(iacc_hi),
-            i32x4_extract_lane::<3>(iacc_hi),
-        ];
 
         let mut iacc_min = [0i32; 8];
         for sb in 0..8 {
