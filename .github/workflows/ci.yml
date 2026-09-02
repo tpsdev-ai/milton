@@ -111,6 +111,15 @@ jobs:
           fi
       - name: Build native milton-embed (q4_lock is native-vs-WASM)
         run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
+      - name: q4_lock milton-embed has no MILTON_ROPE_LIBM_SIN
+        run: |
+          set -euo pipefail
+          bin=crate/target/release/milton-embed
+          if grep -a -F -q 'MILTON_ROPE_LIBM_SIN' "$bin"; then
+            echo "fail-closed: wasm-job milton-embed contains MILTON_ROPE_LIBM_SIN" >&2
+            exit 1
+          fi
+          echo "ok  q4_lock milton-embed has no MILTON_ROPE_LIBM_SIN"
       - name: wasm:gate (rebuilt artifact)
         run: npm run wasm:gate
       - name: wasm:must-fail
@@ -131,5 +140,16 @@ jobs:
       - uses: ./.github/actions/setup-ci
       - name: Build native milton-embed (AVX2 path)
         run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
+      - name: Default milton-embed has no MILTON_ROPE_LIBM_SIN
+        run: |
+          set -euo pipefail
+          bin=crate/target/release/milton-embed
+          if grep -a -F -q 'MILTON_ROPE_LIBM_SIN' "$bin"; then
+            echo "fail-closed: default milton-embed contains MILTON_ROPE_LIBM_SIN" >&2
+            exit 1
+          fi
+          echo "ok  default milton-embed has no MILTON_ROPE_LIBM_SIN"
       - name: wasm:compare two-way expected-outcome
         run: npm run wasm:compare-verdict
+      - name: wasm:compare must-fire (rope-libm-sin)
+        run: npm run wasm:compare:libm-sin-must-fire

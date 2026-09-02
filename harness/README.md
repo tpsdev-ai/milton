@@ -93,6 +93,7 @@ npm run harness:footprint   # shipped MB + assert zero native binary in src/ and
 npm run harness:bench       # current Flair path (HFE / Harper models.embed) on this host
 npm run wasm:bench          # Milton WASM-SIMD vs baseline-bench.json (delta, not a claim)
 npm run wasm:compare        # native-Rust vs WASM within epsilon.json
+# MILTON_ROPE_LIBM_SIN=1 npm run wasm:compare  # must-fire: native --features rope-libm-sin, must go RED
 npm run wasm:gate           # WASM vs ref_f32 (absolute + ratio) + Q4 lock
 ```
 

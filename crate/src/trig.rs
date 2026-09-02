@@ -100,7 +100,7 @@ pub fn rope_theta_scale(freq_base: f32, head_dim: usize) -> f32 {
 /// honours the switch — a gate nobody has seen fail is not a gate.
 #[inline]
 pub fn rope_use_libm_sin() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "rope-libm-sin"))]
     {
         use std::sync::OnceLock;
         static ON: OnceLock<bool> = OnceLock::new();
@@ -109,7 +109,7 @@ pub fn rope_use_libm_sin() -> bool {
             Err(_) => false,
         });
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(not(target_arch = "wasm32"), feature = "rope-libm-sin")))]
     {
         false
     }
@@ -461,6 +461,18 @@ mod tests {
         let libm = 1000.0f32.powf(-2.0 / 64.0);
         let d = got.to_bits().abs_diff(libm.to_bits());
         assert!(d <= 2, "theta_scale vs libm powf ulps={d}");
+    }
+
+    #[cfg(not(feature = "rope-libm-sin"))]
+    #[test]
+    fn rope_use_libm_sin_default_is_false() {
+        // Default cargo test does not enable rope-libm-sin. The env-var
+        // read is compiled out; this must stay false even if the env is set.
+        std::env::set_var("MILTON_ROPE_LIBM_SIN", "1");
+        assert!(
+            !rope_use_libm_sin(),
+            "default build must ignore MILTON_ROPE_LIBM_SIN"
+        );
     }
 
     /// The #26 residual: glibc `sinf` vs WASM compiler-builtins at
