@@ -1,6 +1,25 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `allk` | `auto`).
+ * Does not live in the wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
+ */
+export function q4kSetForce(name: string): void;
+export function q4kSetThreshold(t: number): void;
+export function q4kThreshold(): number;
+/**
+ * One synthetic superblock × `n_tokens` of the per-k variant (calibrator).
+ */
+export function q4kRunPerk(n_tokens: number): void;
+/**
+ * One synthetic superblock × `n_tokens` of the all-k variant (calibrator).
+ */
+export function q4kRunAllk(n_tokens: number): void;
+/**
+ * Bit-exact check: `max_abs` between the two variants on the synth tile.
+ */
+export function q4kVariantMaxAbs(): number;
+/**
  * In-process embedder loaded from GGUF bytes.
  */
 export class Milton {
@@ -28,6 +47,12 @@ export interface InitOutput {
   readonly milton_embed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
   readonly milton_embedWithFault: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
   readonly milton_embeddingLength: (a: number) => number;
+  readonly q4kSetForce: (a: number, b: number) => void;
+  readonly q4kSetThreshold: (a: number) => void;
+  readonly q4kThreshold: () => number;
+  readonly q4kRunPerk: (a: number) => void;
+  readonly q4kRunAllk: (a: number) => void;
+  readonly q4kVariantMaxAbs: () => number;
   readonly __wbindgen_export_0: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __externref_table_dealloc: (a: number) => void;
