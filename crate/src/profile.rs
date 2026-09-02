@@ -13,9 +13,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::exp::vmix_axpy;
 use crate::meta::{LLAMA_POOLING_CLS, LLAMA_POOLING_MEAN};
-use crate::model::{
-    forward_variant, mean_pool_skip, split_qkv, ForwardVariant, Model,
-};
+use super::{forward_variant, mean_pool_skip, split_qkv, ForwardVariant, Model};
 use crate::ops::{
     cls_pool, l2_normalize_inplace, layer_norm, mean_pool, rope_neox_inplace,
     rope_norm_inplace, softmax_inplace, swiglu,

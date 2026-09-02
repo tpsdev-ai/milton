@@ -50,15 +50,15 @@ pub struct Model {
     pub meta: ModelMeta,
     pub weights: Weights,
     pub config: EmbedConfig,
-    pub(crate) n_embd: usize,
-    pub(crate) n_head: usize,
-    pub(crate) n_ff: usize,
-    pub(crate) n_layer: usize,
-    pub(crate) head_dim: usize,
-    pub(crate) n_rot: usize,
-    pub(crate) ln_eps: f32,
-    pub(crate) rope_freq_base: f32,
-    pub(crate) causal: bool,
+    n_embd: usize,
+    n_head: usize,
+    n_ff: usize,
+    n_layer: usize,
+    head_dim: usize,
+    n_rot: usize,
+    ln_eps: f32,
+    rope_freq_base: f32,
+    causal: bool,
 }
 
 impl Model {
@@ -399,7 +399,7 @@ pub fn embed(model: &Model, text: &str, prefix: Prefix) -> Result<Vec<f32>> {
 /// Probe-only graph knobs. Default is the llama.cpp nomic-bert graph.
 /// Set `MILTON_VARIANT` to A/B a residual. Not a production fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ForwardVariant {
+enum ForwardVariant {
     Baseline,
     NoType,
     SwapSwiglu,
@@ -411,7 +411,7 @@ pub(crate) enum ForwardVariant {
     QkvInterleaved,
 }
 
-pub(crate) fn forward_variant() -> ForwardVariant {
+fn forward_variant() -> ForwardVariant {
     match std::env::var("MILTON_VARIANT").unwrap_or_default().as_str() {
         "no_type" => ForwardVariant::NoType,
         "swap_swiglu" => ForwardVariant::SwapSwiglu,
@@ -425,7 +425,7 @@ pub(crate) fn forward_variant() -> ForwardVariant {
     }
 }
 
-pub(crate) fn split_qkv(
+fn split_qkv(
     qkv: &[f32],
     q: &mut [f32],
     k: &mut [f32],
@@ -481,7 +481,7 @@ fn dump_stage(name: &str, x: &[f32]) {
     }
 }
 
-pub(crate) fn mean_pool_skip(
+fn mean_pool_skip(
     x: &[f32],
     n_tokens: usize,
     n_embd: usize,
@@ -506,3 +506,10 @@ pub(crate) fn mean_pool_skip(
         *v *= inv;
     }
 }
+
+#[cfg(feature = "profile")]
+#[path = "profile.rs"]
+mod profile;
+
+#[cfg(feature = "profile")]
+pub use profile::Snapshot;
