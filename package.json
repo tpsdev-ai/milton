@@ -42,6 +42,8 @@
     "wasm:gate": "node harness/scripts/run-wasm-gate.mjs",
     "wasm:compare": "node harness/scripts/compare-native-wasm.mjs",
     "wasm:compare-verdict": "node harness/scripts/wasm-compare-verdict.mjs",
+    "wasm:compare:libm-sin": "MILTON_ROPE_LIBM_SIN=1 node harness/scripts/compare-native-wasm.mjs",
+    "wasm:compare:libm-sin-must-fire": "node harness/scripts/wasm-compare-libm-sin-must-fire.mjs",
     "wasm:bench": "node harness/scripts/bench-milton.mjs",
     "wasm:must-fail": "node harness/scripts/wasm-must-fail.mjs"
   },

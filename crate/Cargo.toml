@@ -46,6 +46,12 @@ path = "src/bin/embed-must-fail.rs"
 default = []
 # CLI extras for milton-tokenize. serde_json is a regular dep (dequant bins + tokenizer).
 cli = []
+# Test-only: compile the MILTON_ROPE_LIBM_SIN env read into native milton-embed.
+# Default / shipped builds omit it (Kern #32 hazard 3 / issue #33) so a stray
+# env var cannot put libm sin/cos on the native path. Enable only for the
+# wasm:compare must-fire receipt. Not `must-fail` — that name is already the
+# ForwardFault family (embed-must-fail / wasm:must-fail / dequant-must-fail).
+rope-libm-sin = []
 
 [dependencies]
 unicode-general-category = "1.0"

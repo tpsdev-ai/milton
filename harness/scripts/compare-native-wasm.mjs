@@ -3,7 +3,8 @@
  * Native-Rust vs WASM-SIMD: same crate, two compiles.
  * Gate: cosine >= 1-EPSILON AND max_abs <= EPSILON_ABS (epsilon.json, unchanged).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadCorpus } from "../lib/corpus.js";
@@ -14,6 +15,24 @@ import { embed as wasmEmbed } from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "../..");
+
+// Must-fire receipt: MILTON_ROPE_LIBM_SIN=1 npm run wasm:compare.
+// Default wasm:compare / wasm:gate / embed:gate do not set this and must
+// keep using the feature-less binary (no env-var string in the image).
+if (process.env.MILTON_ROPE_LIBM_SIN === "1") {
+  const script = join(ROOT, "scripts", "build-embed-rope-libm-sin.sh");
+  const bin = execFileSync("bash", [script], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  }).trim();
+  if (!bin || !existsSync(bin)) {
+    throw new Error(
+      "fail-closed: rope-libm-sin milton-embed build produced no binary",
+    );
+  }
+  process.env.MILTON_EMBED_BIN = bin;
+}
 
 const corpus = loadCorpus();
 const eps = loadEpsilon();

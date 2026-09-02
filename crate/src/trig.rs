@@ -95,12 +95,15 @@ pub fn rope_theta_scale(freq_base: f32, head_dim: usize) -> f32 {
 
 /// Test-only: put libm `sinf`/`cosf` back on the **native** backend.
 ///
+/// Compiled in only with `--features rope-libm-sin`. Default / shipped
+/// builds have no env-var read and no `MILTON_ROPE_LIBM_SIN` string —
+/// this function is the constant `false`. With the feature,
 /// `MILTON_ROPE_LIBM_SIN=1` on native `milton-embed` turns `wasm:compare`
 /// RED (one backend on glibc, the other on the shared kernel). WASM never
 /// honours the switch — a gate nobody has seen fail is not a gate.
 #[inline]
 pub fn rope_use_libm_sin() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "rope-libm-sin", not(target_arch = "wasm32")))]
     {
         use std::sync::OnceLock;
         static ON: OnceLock<bool> = OnceLock::new();
@@ -109,7 +112,7 @@ pub fn rope_use_libm_sin() -> bool {
             Err(_) => false,
         });
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "rope-libm-sin", not(target_arch = "wasm32"))))]
     {
         false
     }
@@ -461,6 +464,18 @@ mod tests {
         let libm = 1000.0f32.powf(-2.0 / 64.0);
         let d = got.to_bits().abs_diff(libm.to_bits());
         assert!(d <= 2, "theta_scale vs libm powf ulps={d}");
+    }
+
+    #[cfg(not(feature = "rope-libm-sin"))]
+    #[test]
+    fn rope_use_libm_sin_default_is_false() {
+        // Default cargo test does not enable rope-libm-sin. The env-var
+        // read is compiled out; this must stay false even if the env is set.
+        std::env::set_var("MILTON_ROPE_LIBM_SIN", "1");
+        assert!(
+            !rope_use_libm_sin(),
+            "default build must ignore MILTON_ROPE_LIBM_SIN"
+        );
     }
 
     /// The #26 residual: glibc `sinf` vs WASM compiler-builtins at

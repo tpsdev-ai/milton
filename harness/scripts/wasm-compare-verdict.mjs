@@ -125,9 +125,13 @@ export function main(argv) {
   }
 
   if (!args.skipRun) {
+    const env = { ...process.env };
+    delete env.MILTON_ROPE_LIBM_SIN;
+    delete env.MILTON_EMBED_BIN;
     const ran = spawnSync(process.execPath, [COMPARE], {
       cwd: ROOT,
       encoding: "utf8",
+      env,
       stdio: ["ignore", "pipe", "inherit"],
     });
     if (ran.stdout) process.stdout.write(ran.stdout);
