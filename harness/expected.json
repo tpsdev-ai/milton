@@ -1,10 +1,7 @@
 {
   "schema": "milton.wasm-compare.expected/1",
-  "expected": "pass",
-  "reason": "ACCEPTANCE-2 must-fail: flipped to pass so observed FAIL is unexpected",
-  "blocked_on": [
-    25,
-    26
-  ],
-  "note": "Two-way expected-outcome (flair#1468 shape). This lane is RED only when the observed wasm:compare result differs from `expected` in either direction \u2014 an unexpected PASS is red and means flip `expected` to pass in that same PR. When #26 merges, rebase this file and update `reason` to RoPE sinf / blocked on #27 if that is then the residual. When #27 lands, that PR flips `expected` to pass."
+  "expected": "fail",
+  "reason": "softmax glibc expf vs WASM compiler-builtins. On #24 (0cb39be) max_cos_dist ~0.0105. Blocked on unmerged #25/#26 (shared permissive vectorized exp). Not RoPE sinf / #27 yet.",
+  "blocked_on": [25, 26],
+  "note": "Two-way expected-outcome (flair#1468 shape). This lane is RED only when the observed wasm:compare result differs from `expected` in either direction — an unexpected PASS is red and means flip `expected` to pass in that same PR. When #26 merges, rebase this file and update `reason` to RoPE sinf / blocked on #27 if that is then the residual. When #27 lands, that PR flips `expected` to pass."
 }
