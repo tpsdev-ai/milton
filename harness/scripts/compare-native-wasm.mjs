@@ -60,7 +60,7 @@ const receipt = {
   max_abs: maxAbs,
   epsilon: eps.epsilon,
   epsilon_abs: eps.epsilon_abs,
-  note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, and softmax/silu/V-mix use the same math on both backends. epsilon.json is not rewritten.",
+  note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten.",
   cases: rows,
 };
 

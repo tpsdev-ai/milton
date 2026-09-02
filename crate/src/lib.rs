@@ -10,6 +10,7 @@ mod prefix;
 mod tokenizer;
 mod vocab;
 mod exp;
+mod trig;
 mod ops;
 mod qmatmul;
 #[cfg(target_arch = "x86_64")]

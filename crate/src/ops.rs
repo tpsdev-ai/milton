@@ -176,39 +176,56 @@ pub fn softmax_inplace(logits: &mut [f32]) {
 /// llama.cpp `LLAMA_ROPE_TYPE_NEOX` + `ggml_rope_cache_init` with ext_factor=0,
 /// freq_scale=1, attn_factor=1 (no YaRN). Pairs (x[i], x[i + n_dims/2]).
 ///
-/// Cache matches C libm `powf`/`cosf`/`sinf` (Rust `powf`/`cos`/`sin` is
-/// bit-exact vs those on this toolchain). Token 0 is identity. The first
-/// bit miss vs the eval-callback dump was the apply: ggml's AVX2 build
-/// contracts
-///   `x0*cos - x1*sin` → `fmaf(x0, cos, -(x1*sin))`
-///   `x0*sin + x1*cos` → `fmaf(x0, sin,  x1*cos)`
-/// The other order (`fmaf(-x1, sin, x0*cos)`) disagrees with the dump.
-/// Do not revert to mul+sub.
-pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_dim: usize, freq_base: f32) {
+/// Cache uses the shared permissive `sin`/`cos` (`crate::trig`) and a shared
+/// IEEE-sqrt `theta_scale` so native and WASM are bit-identical. Token 0 is
+/// identity. Apply is mul+add, not FMA (same as V-mix / Q4_K GEMV). Do not
+/// call `f32::sin` / `f32::cos` / `f32::powf` on this path.
+///
+/// `θ_i` is built by repeated multiply (`θ ← pos; θ *= θ_scale`) so the
+/// chain is the same ops on both backends. `|θ| ≤ pos < context_length`
+/// (nomic 2048); the reduction is valid for `|x| < 39000`.
+pub fn rope_neox_inplace(
+    x: &mut [f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+    freq_base: f32,
+) {
     debug_assert_eq!(x.len(), n_tokens * n_heads * head_dim);
     debug_assert!(head_dim % 2 == 0);
     let half = head_dim / 2;
-    let theta_scale = freq_base.powf(-2.0 / head_dim as f32);
-    let mut cache = vec![0.0f32; head_dim];
+    let theta_scale = crate::trig::rope_theta_scale(freq_base, head_dim);
+    let mut thetas = vec![0.0f32; half];
+    let mut sins = vec![0.0f32; half];
+    let mut coses = vec![0.0f32; half];
     for t in 0..n_tokens {
         let mut theta = t as f32;
         for i in 0..half {
-            cache[2 * i] = theta.cos();
-            cache[2 * i + 1] = theta.sin();
+            thetas[i] = theta;
             theta *= theta_scale;
+        }
+        debug_assert!(
+            thetas[0].abs() <= crate::trig::ROPE_THETA_MAX,
+            "RoPE pos {t} exceeds |θ|≤{}",
+            crate::trig::ROPE_THETA_MAX
+        );
+        if crate::trig::rope_use_libm_sin() {
+            // Test-only: libm on ONE backend (native). Turns wasm:compare RED.
+            for i in 0..half {
+                sins[i] = thetas[i].sin();
+                coses[i] = thetas[i].cos();
+            }
+        } else {
+            crate::trig::sincosf_inplace(&thetas, &mut sins, &mut coses);
         }
         for h in 0..n_heads {
             let base = (t * n_heads + h) * head_dim;
             for i in 0..half {
                 let x0 = x[base + i];
                 let x1 = x[base + i + half];
-                let cos_t = cache[2 * i];
-                let sin_t = cache[2 * i + 1];
-                // Mul+add, not FMA. Native `fmaf32` is glibc/hardware FMA;
-                // WASM `fmaf32_soft` is not bit-identical on this apply
-                // (issue #25 Qcur-0/Kcur-0). Remaining native-vs-WASM split
-                // after this is glibc `sinf` vs WASM compiler-builtins (1 ULP
-                // at t=6, i=14) — not this polynomial.
+                let cos_t = coses[i];
+                let sin_t = sins[i];
+                // Mul+add, not FMA. Same op order on native and WASM.
                 x[base + i] = x0 * cos_t + -(x1 * sin_t);
                 x[base + i + half] = x0 * sin_t + x1 * cos_t;
             }
@@ -217,26 +234,41 @@ pub fn rope_neox_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_di
 }
 
 /// GPT-J / NORM RoPE: consecutive pairs (x[2i], x[2i+1]). Probe only.
-pub fn rope_norm_inplace(x: &mut [f32], n_tokens: usize, n_heads: usize, head_dim: usize, freq_base: f32) {
+pub fn rope_norm_inplace(
+    x: &mut [f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+    freq_base: f32,
+) {
     debug_assert_eq!(x.len(), n_tokens * n_heads * head_dim);
     debug_assert!(head_dim % 2 == 0);
     let half = head_dim / 2;
-    let theta_scale = freq_base.powf(-2.0 / head_dim as f32);
-    let mut cache = vec![0.0f32; head_dim];
+    let theta_scale = crate::trig::rope_theta_scale(freq_base, head_dim);
+    let mut thetas = vec![0.0f32; half];
+    let mut sins = vec![0.0f32; half];
+    let mut coses = vec![0.0f32; half];
     for t in 0..n_tokens {
         let mut theta = t as f32;
         for i in 0..half {
-            cache[2 * i] = theta.cos();
-            cache[2 * i + 1] = theta.sin();
+            thetas[i] = theta;
             theta *= theta_scale;
+        }
+        if crate::trig::rope_use_libm_sin() {
+            for i in 0..half {
+                sins[i] = thetas[i].sin();
+                coses[i] = thetas[i].cos();
+            }
+        } else {
+            crate::trig::sincosf_inplace(&thetas, &mut sins, &mut coses);
         }
         for h in 0..n_heads {
             let base = (t * n_heads + h) * head_dim;
             for i in 0..half {
                 let x0 = x[base + 2 * i];
                 let x1 = x[base + 2 * i + 1];
-                let cos_t = cache[2 * i];
-                let sin_t = cache[2 * i + 1];
+                let cos_t = coses[i];
+                let sin_t = sins[i];
                 x[base + 2 * i] = x0 * cos_t - x1 * sin_t;
                 x[base + 2 * i + 1] = x0 * sin_t + x1 * cos_t;
             }
@@ -472,8 +504,16 @@ mod tests {
             (-0.0, 1.0, 2.0),
             (1.0, 0.0, -0.0),
             (1.5, -2.25, 0.125),
-            (f32::from_bits(0x3f2aaaab), f32::from_bits(0x40490fdb), f32::from_bits(0x3f800001)),
-            (f32::from_bits(0xbfc83027), f32::from_bits(0x3f4be4aa), -(f32::from_bits(0xbef72f7c) * f32::from_bits(0x3f1acd39))),
+            (
+                f32::from_bits(0x3f2aaaab),
+                f32::from_bits(0x40490fdb),
+                f32::from_bits(0x3f800001),
+            ),
+            (
+                f32::from_bits(0xbfc83027),
+                f32::from_bits(0x3f4be4aa),
+                -(f32::from_bits(0xbef72f7c) * f32::from_bits(0x3f1acd39)),
+            ),
             (1e-20, 1e-20, 1.0),
             (1e20, 1e20, -1e20 * 1e20),
             (0.1, 0.2, 0.3),

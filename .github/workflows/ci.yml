@@ -109,6 +109,8 @@ jobs:
           if [[ "$match" != "true" ]]; then
             echo "::error::wasm rebuild is not byte-reproducible. Keep this lane red; gate on the rebuilt artifact. Do not weaken the compare. Do not commit a new wasm unless the committed artifact is proven stale vs this SHA's sources."
           fi
+      - name: Build native milton-embed (q4_lock is native-vs-WASM)
+        run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
       - name: wasm:gate (rebuilt artifact)
         run: npm run wasm:gate
       - name: wasm:must-fail

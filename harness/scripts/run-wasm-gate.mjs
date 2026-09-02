@@ -10,6 +10,7 @@ import { loadCorpus } from "../lib/corpus.js";
 import { f32GatePass } from "../lib/f32-gate.js";
 import { loadEpsilon, loadGoldens } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
+import { createNativeEmbedder } from "../lib/milton-native.js";
 import { embed } from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,8 @@ const qById = new Map(qLlama.items.map((it) => [it.id, it]));
 const f16ById = new Map(f16.items.map((it) => [it.id, it]));
 const pending = new Set(budget.pending_excluded ?? []);
 const q4Lock = new Set(["empty-none", "short-hello-none"]);
+const native = createNativeEmbedder();
+const nativeEmbed = native.embed;
 
 if (!(budget.ratio_max > 0) || !(budget.gate_cos_dist > 0)) {
   throw new Error("fail-closed: quant-budget ratio_max / gate_cos_dist must be positive");
@@ -38,6 +41,8 @@ let maxCos = 0;
 let sumCos = 0;
 let maxAbs = 0;
 let maxQ4 = 0;
+let maxNativeWasmCos = 0;
+let maxNativeWasmAbs = 0;
 let minRatio = Infinity;
 let maxRatio = 0;
 let nGated = 0;
@@ -64,6 +69,19 @@ for (const c of corpus.cases) {
   const vsQ4 = q4
     ? compareVectors(got, q4.vector, { epsilon: eps.epsilon, epsilonAbs: eps.epsilon_abs })
     : null;
+  let vsNative = null;
+  if (q4Lock.has(c.id)) {
+    try {
+      const nativeVec = await nativeEmbed(c.text, { prefix: c.prefix });
+      vsNative = compareVectors(got, nativeVec, {
+        epsilon: eps.epsilon,
+        epsilonAbs: eps.epsilon_abs,
+      });
+    } catch (err) {
+      failures.push({ id: c.id, reason: `q4_lock:native_threw:${err.message}` });
+      continue;
+    }
+  }
   const qb = caseBudget?.quant_budget_cos_dist ?? 0;
   const decision = f32GatePass({
     cos_dist: vsF32.cos_dist,
@@ -72,7 +90,7 @@ for (const c of corpus.cases) {
     ratio_max: budget.ratio_max,
   });
   const isPending = pending.has(c.id);
-  const lockFail = q4Lock.has(c.id) && vsQ4 && !vsQ4.pass;
+  const lockFail = q4Lock.has(c.id) && vsNative && !vsNative.pass;
   const row = {
     id: c.id,
     prefix: c.prefix,
@@ -81,6 +99,8 @@ for (const c of corpus.cases) {
     milton_vs_f32_max_abs: vsF32.max_abs,
     milton_vs_q_llama_cos_dist: vsQ4?.cos_dist ?? null,
     milton_vs_q_llama_max_abs: vsQ4?.max_abs ?? null,
+    milton_native_vs_wasm_cos_dist: vsNative?.cos_dist ?? null,
+    milton_native_vs_wasm_max_abs: vsNative?.max_abs ?? null,
     ratio_vs_quant_budget: decision.ratio,
     within_absolute: decision.within_absolute,
     within_ratio: decision.within_ratio,
@@ -94,6 +114,14 @@ for (const c of corpus.cases) {
   if (Number.isFinite(vsF32.max_abs) && vsF32.max_abs > maxAbs) maxAbs = vsF32.max_abs;
   sumCos += Number.isFinite(vsF32.cos_dist) ? vsF32.cos_dist : 1;
   if (vsQ4 && vsQ4.cos_dist > maxQ4) maxQ4 = vsQ4.cos_dist;
+  if (vsNative) {
+    if (Number.isFinite(vsNative.cos_dist) && vsNative.cos_dist > maxNativeWasmCos) {
+      maxNativeWasmCos = vsNative.cos_dist;
+    }
+    if (Number.isFinite(vsNative.max_abs) && vsNative.max_abs > maxNativeWasmAbs) {
+      maxNativeWasmAbs = vsNative.max_abs;
+    }
+  }
   if (Number.isFinite(decision.ratio) && decision.ratio < minRatio) minRatio = decision.ratio;
   if (Number.isFinite(decision.ratio) && decision.ratio > maxRatio) maxRatio = decision.ratio;
   gated.push(row);
@@ -105,7 +133,7 @@ for (const c of corpus.cases) {
     if (!decision.within_ratio) {
       reason.push(`ratio=${decision.ratio} > ratio_max=${budget.ratio_max}`);
     }
-    if (lockFail) reason.push(`q4_lock:${vsQ4.reason}`);
+    if (lockFail) reason.push(`q4_lock:${vsNative.reason}`);
     failures.push({ ...row, reason: reason.join(",") });
   }
 }
@@ -115,18 +143,21 @@ const q4LockFailures = failures.filter((f) => String(f.reason ?? "").startsWith(
 const f32Pass = f32Failures.length === 0;
 const q4LockPass = q4LockFailures.length === 0;
 
+const gatePass = f32Pass && q4LockPass;
 const receipt = {
   schema: "milton.embed.receipt/2",
   backend: "wasm-simd",
   oracle: "ref_f32",
-  result: f32Pass ? "pass" : "fail",
+  result: gatePass ? "pass" : "fail",
   n: corpus.cases.length,
   n_gated: nGated,
-  failed: f32Failures.length,
+  failed: f32Failures.length + q4LockFailures.length,
   max_cos_dist: maxCos,
   mean_cos_dist: nGated > 0 ? sumCos / nGated : 0,
   max_abs: maxAbs,
   max_milton_vs_q_llama_cos_dist: maxQ4,
+  milton_native_vs_wasm_cos_dist: maxNativeWasmCos,
+  milton_native_vs_wasm_max_abs: maxNativeWasmAbs,
   gate_cos_dist: budget.gate_cos_dist,
   ratio_max: budget.ratio_max,
   min_ratio_gated: Number.isFinite(minRatio) ? minRatio : 0,
@@ -134,8 +165,9 @@ const receipt = {
   q4_epsilon_unchanged: { epsilon: eps.epsilon, epsilon_abs: eps.epsilon_abs },
   q4_lock: [...q4Lock],
   q4_lock_result: q4LockPass ? "pass" : "fail",
+  q4_lock_vs: "milton_native_vs_wasm",
   q4_lock_note:
-    "empty-none / short-hello-none are the native AVX2 bit-exact pin vs q_llama. SIMD128 kernels match native Q@K dots; remaining residual is softmax f32::exp (glibc vs WASM). Tight lock is not re-coupled while short-hello-none fails. epsilon.json is not rewritten.",
+    "empty-none / short-hello-none lock native-Milton vs WASM-Milton at epsilon.json (1e-6 / 1e-5). Bit-exact by construction after shared exp + shared RoPE sin/cos. Not vs q_llama / llama.cpp Q4. vs-llama.cpp end-to-end stays the budgeted F32 ratio gate. epsilon.json is not rewritten.",
   q4_lock_failures: q4LockFailures,
   pending_excluded: budget.pending_excluded,
   failures: f32Failures,
@@ -143,6 +175,7 @@ const receipt = {
   pending: pendingRows,
 };
 
+native.close();
 mkdirSync(join(ROOT, "harness", "receipts"), { recursive: true });
 writeFileSync(join(ROOT, "harness", "receipts", "wasm-gate.json"), `${JSON.stringify(receipt, null, 2)}\n`);
 process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
