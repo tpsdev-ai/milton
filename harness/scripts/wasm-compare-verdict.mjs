@@ -6,7 +6,7 @@
  * That non-zero is not the lane verdict: this file compares the receipt's
  * `result` to harness/expected.json. RED only when observed differs from
  * expected either way (unexpected PASS is red). An abort (no receipt) is
- * always RED — that is not the known softmax residual.
+ * always RED — that is not a known residual.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
