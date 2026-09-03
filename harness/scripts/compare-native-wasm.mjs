@@ -17,6 +17,7 @@ import {
   lastQmatmulKernel,
   lastThreadReport,
   lastWasmArtifact,
+  lastWasmFile,
 } from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -95,6 +96,7 @@ const receipt = {
   max_abs: maxAbs,
   epsilon: eps.epsilon,
   epsilon_abs: eps.epsilon_abs,
+  wasm_file: lastWasmFile,
   wasm_artifact: lastWasmArtifact,
   wasm_threads: lastThreadCount,
   thread_report: lastThreadReport,

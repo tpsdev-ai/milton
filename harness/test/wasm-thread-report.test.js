@@ -113,8 +113,10 @@ describe("lastThreadReport + MILTON_THREADS=1", () => {
       "artifact",
       "availableParallelism",
       "sabAvailable",
+      "wasm",
       "workers",
     ]);
+    assert.equal(got.report.wasm, "milton_relaxed_bg.wasm");
     assert.equal(got.report.artifact, "single");
     assert.equal(got.report.workers, 1);
     assert.equal(got.report.sabAvailable, true);
@@ -130,6 +132,7 @@ describe("lastThreadReport + MILTON_THREADS=1", () => {
     assert.equal(got.threads, want);
     assert.equal(got.report.artifact, "threads");
     assert.equal(got.report.workers, want);
+    assert.equal(got.report.wasm, "milton_threads_relaxed_bg.wasm");
     assert.equal(got.report.sabAvailable, true);
     assert.equal(got.report.availableParallelism, cores);
     assert.equal(

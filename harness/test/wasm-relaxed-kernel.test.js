@@ -102,6 +102,15 @@ describe("lastQmatmulKernel", () => {
     assert.equal(got.kernel.probe, true);
     assert.equal(got.thread.artifact, "threads");
     assert.equal(got.thread.workers, cores);
+    assert.equal(got.thread.wasm, "milton_threads_relaxed_bg.wasm");
+    assert.ok(got.thread.workers > 1);
+  });
+
+  it("inherited MILTON_WASM_THREADS=0 without override stays single (the hole Cos found)", () => {
+    const got = runFull({ MILTON_THREADS: "4", MILTON_WASM_THREADS: "0" });
+    assert.equal(got.thread.artifact, "single");
+    assert.equal(got.thread.workers, 1);
+    assert.equal(got.thread.wasm, "milton_relaxed_bg.wasm");
   });
 
   it("MILTON_RELAXED_SIMD=0 reports simd128 with probe still true", () => {

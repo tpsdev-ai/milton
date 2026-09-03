@@ -19,8 +19,9 @@ The JS loader (`src/index.js`) picks the threaded module only when
 shared-memory probe, **and** the pool would be larger than 1.
 `MILTON_THREADS=1` forces the single-thread module (not threads-with-W=1).
 `MILTON_THREADS=<n>` sizes the pool when the threads artifact is selected.
-`lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable}`
-after load (`sabAvailable` is the capability probe, not the pick).
+`lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable, wasm}`
+after load (`sabAvailable` is the capability probe, not the pick; `wasm` is
+the basename actually instantiated).
 Absence of SAB is the ordinary path, not an error. A shared-memory module
 cannot instantiate where SAB is absent — that is why there are separate
 single-thread and threaded artifacts, each with a simd128 and relaxed variant.
@@ -51,16 +52,17 @@ lane is `npm run wasm:compare:simd128` (`MILTON_RELAXED_SIMD=0`).
 Tight bit-exact verdict (`wasm:compare-verdict`) runs on **both**
 artifacts in `wasm-compare` (Node 22) and `wasm-compare-node26`:
 
-| npm script | artifact | `wasm_threads` | kernel |
-|---|---|---:|---|
-| `wasm:compare-verdict` | `single` | 1 | `relaxed` |
-| `wasm:compare-verdict:threads` | `threads` | 4 | `relaxed` |
-| `wasm:compare-verdict:threads:simd128` | `threads` | 4 | `simd128` |
-| `wasm:compare-verdict:threads:relaxed` | `threads` | 4 | `relaxed` |
+| npm script | file | artifact | W | kernel |
+|---|---|---|---:|---|
+| `wasm:compare-verdict` | `milton_relaxed_bg.wasm` | `single` | 1 | `relaxed` |
+| `wasm:compare-verdict:simd128` | `milton_bg.wasm` | `single` | 1 | `simd128` |
+| `wasm:compare-verdict:threads` | `milton_threads_relaxed_bg.wasm` | `threads` | 4 | `relaxed` |
+| `wasm:compare-verdict:threads:simd128` | `milton_threads_bg.wasm` | `threads` | 4 | `simd128` |
 
-Each verdict is RED unless the receipt reports that shape **and**
-`max_abs=0`. Do not let a `MILTON_WASM_THREADS=0` compare stand in for
-the product path.
+Threaded scripts use `env MILTON_WASM_THREADS=1 MILTON_THREADS=4` so a
+workflow-level `MILTON_WASM_THREADS=0` cannot neuter them. The verdict
+is RED unless the receipt shows that file, `thread_report.workers > 1`,
+and `max_abs=0`. A labeled `artifact=threads` with W=1 fails the lane.
 
 Q6_K stays on the base SIMD128 kernel because of its −32 reconstruction
 offset, not because 0..63 is out of i7 range (`63 = 0x3F`).

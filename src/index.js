@@ -96,11 +96,15 @@ let workerPool = null;
 /** Last load-time Q4_K calibration (or forced-variant) report. */
 export let lastQ4kCalibration = null;
 
+/** Basename of the `.wasm` file this process actually instantiated. */
+export let lastWasmFile = null;
+
 /**
  * Loader path report (Flint #50 ASK). Same grain as `lastQ4kCalibration`.
  * `sabAvailable` is the capability probe, not "did we pick threads" —
  * `MILTON_THREADS=1` on a SAB host is `{artifact:'single', workers:1, sabAvailable:true}`.
- * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean } | null}
+ * `wasm` is the basename actually instantiated (proves the four-way pick).
+ * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string } | null}
  */
 export let lastThreadReport = null;
 
@@ -120,12 +124,14 @@ export let lastQmatmulKernel = null;
 
 export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
 
-function publishThreadReport(artifact, workers) {
+function publishThreadReport(artifact, workers, wasmFile) {
+  lastWasmFile = wasmFile;
   lastThreadReport = {
     artifact,
     workers,
     availableParallelism: hostParallelism(),
     sabAvailable: sabAvailable(),
+    wasm: wasmFile,
   };
   lastWasmArtifact = artifact;
   lastThreadCount = workers;
@@ -172,13 +178,13 @@ function ensureWasm() {
         miltonSetWorkers: m.miltonSetWorkers,
         workerGlue: glueModule,
       });
-      publishThreadReport("threads", workerPool.workerCount);
+      publishThreadReport("threads", workerPool.workerCount, missingName);
       lastQmatmulKernel = qk;
       api = m;
     } else {
       const m = await import(glueModule);
       await m.default({ module_or_path: bytes });
-      publishThreadReport("single", 1);
+      publishThreadReport("single", 1, missingName);
       lastQmatmulKernel = qk;
       api = m;
     }

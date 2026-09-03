@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkReceiptShape, judge, loadExpected } from "../scripts/wasm-compare-verdict.mjs";
+import { checkReceiptShape, judge, loadExpected, prepareCompareEnv } from "../scripts/wasm-compare-verdict.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_PATH = join(HERE, "..", "expected.json");
@@ -68,30 +68,59 @@ describe("wasm-compare two-way expected-outcome (flair#1468 shape)", () => {
     );
   });
 
-  it("threaded receipt shape requires artifact=threads, wasm_threads=4, max_abs=0, kernel", () => {
+  it("threaded receipt shape requires file + pool >1, not a single-thread label", () => {
     const ok = {
+      wasm_file: "milton_threads_relaxed_bg.wasm",
       wasm_artifact: "threads",
       wasm_threads: 4,
       max_abs: 0,
       qmatmul_kernel: { kernel: "relaxed", probe: true, forced: false },
+      thread_report: {
+        artifact: "threads",
+        workers: 4,
+        wasm: "milton_threads_relaxed_bg.wasm",
+      },
     };
     assert.deepEqual(
-      checkReceiptShape(ok, { artifact: "threads", threads: 4, kernel: "relaxed", maxAbs: 0 }),
+      checkReceiptShape(ok, {
+        artifact: "threads",
+        threads: 4,
+        kernel: "relaxed",
+        maxAbs: 0,
+        wasm: "milton_threads_relaxed_bg.wasm",
+      }),
       [],
     );
-    const misses = checkReceiptShape(
+    const labeledSingle = checkReceiptShape(
       {
+        wasm_file: "milton_relaxed_bg.wasm",
         wasm_artifact: "single",
         wasm_threads: 1,
-        max_abs: 0.006,
-        qmatmul_kernel: { kernel: "simd128", probe: true, forced: false },
+        max_abs: 0,
+        qmatmul_kernel: { kernel: "relaxed", probe: true, forced: false },
+        thread_report: { artifact: "single", workers: 1, wasm: "milton_relaxed_bg.wasm" },
       },
-      { artifact: "threads", threads: 4, kernel: "relaxed", maxAbs: 0 },
+      {
+        artifact: "threads",
+        threads: 4,
+        kernel: "relaxed",
+        maxAbs: 0,
+        wasm: "milton_threads_relaxed_bg.wasm",
+      },
     );
-    assert.equal(misses.length, 4);
-    assert.match(misses.join("\n"), /wasm_artifact expected threads/);
-    assert.match(misses.join("\n"), /wasm_threads expected 4/);
-    assert.match(misses.join("\n"), /qmatmul_kernel.kernel expected relaxed/);
-    assert.match(misses.join("\n"), /max_abs expected 0/);
+    assert.ok(labeledSingle.length >= 4);
+    assert.match(labeledSingle.join("\n"), /wasm_artifact expected threads/);
+    assert.match(labeledSingle.join("\n"), /thread_report.workers expected >1/);
+    assert.match(labeledSingle.join("\n"), /wasm_file expected milton_threads_relaxed_bg.wasm/);
+  });
+
+  it("prepareCompareEnv overrides inherited MILTON_WASM_THREADS=0 on the threads lane", () => {
+    const env = prepareCompareEnv(
+      { MILTON_WASM_THREADS: "0", MILTON_THREADS: "1", OTHER: "keep" },
+      { artifact: "threads", threads: 4 },
+    );
+    assert.equal(env.MILTON_WASM_THREADS, "1");
+    assert.equal(env.MILTON_THREADS, "4");
+    assert.equal(env.OTHER, "keep");
   });
 });
