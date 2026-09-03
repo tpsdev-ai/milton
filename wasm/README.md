@@ -5,20 +5,47 @@ Consumers do not need Rust, `wasm-pack`, or a compile step.
 
 | file | role |
 |---|---|
-| `milton_bg.wasm` | same `crate/` lib compiled `wasm32-unknown-unknown` + `simd128` (ordinary path when SAB is absent) |
-| `milton.js` | wasm-bindgen `--target web` glue (Node loads it via `src/index.js`) |
-| `milton_threads_bg.wasm` | same crate + `wasm-threads`, `+atomics,+bulk-memory`, **shared** memory import |
+| `milton_bg.wasm` | same `crate/` lib compiled `wasm32-unknown-unknown` + `simd128` (bun / probe-fail / `MILTON_RELAXED_SIMD=0`) |
+| `milton.js` | wasm-bindgen `--target web` glue for the simd128 artifact |
+| `milton_relaxed_bg.wasm` | same crate + feature `relaxed-simd` (Q4_K / Q5_K i8×i7 dot). Loaded only after the relaxed-dot probe passes. |
+| `milton_relaxed.js` | wasm-bindgen glue for the relaxed artifact |
+| `milton_threads_bg.wasm` | same crate + `wasm-threads`, `+atomics,+bulk-memory`, **shared** memory import (simd128; #43 does not touch this path) |
 | `milton_threads.js` | wasm-bindgen glue for the threaded artifact |
 
 The JS loader (`src/index.js`) picks the threaded module only when
 `SharedArrayBuffer` + `Atomics` exist, `WebAssembly.validate` accepts a
 shared-memory probe, **and** the pool would be larger than 1.
-`MILTON_THREADS=1` forces `milton_bg.wasm` (not threads-with-W=1).
+`MILTON_THREADS=1` forces the single-thread module (not threads-with-W=1).
 `MILTON_THREADS=<n>` sizes the pool when the threads artifact is selected.
 `lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable}`
 after load (`sabAvailable` is the capability probe, not the pick).
 Absence of SAB is the ordinary path, not an error. A shared-memory module
-cannot instantiate where SAB is absent — that is why there are two artifacts.
+cannot instantiate where SAB is absent — that is why there are two thread artifacts.
+
+## Relaxed SIMD (issue #43)
+
+Fast-path floor is **Node ≥ 22** (V8 12.4). Node 22 / 24 / 26 validate
+`i16x8.relaxed_dot_i8x16_i7x16_s` with no flags. Node 20 predates
+default-on relaxed SIMD.
+
+Detection is `WebAssembly.validate` of a one-function probe containing
+that instruction (`0xfd 0x112`) — **never a runtime or version sniff**.
+Bun (1.3.10, JSC) validates SIMD128 and rejects the relaxed probe, so
+every bun consumer — including flair's own test suites — takes
+`milton_bg.wasm`. The simd128 kernel is a first-class path, not a corner
+case.
+
+`lastQmatmulKernel` records `{kernel: 'relaxed' | 'simd128', probe, forced}`
+after load (`probe` is the capability, not the pick).
+`MILTON_RELAXED_SIMD=0` forces simd128 even when the probe passes.
+`MILTON_RELAXED_SIMD=1` fail-closes if the probe rejects.
+
+This sandbox's Node 22.14 has no `--no-wasm-relaxed-simd` (the V8 flag
+is gone once relaxed SIMD is default-on). The named fallback compare
+lane is `npm run wasm:compare:simd128` (`MILTON_RELAXED_SIMD=0`).
+
+Q6_K stays on the base SIMD128 kernel because of its −32 reconstruction
+offset, not because 0..63 is out of i7 range (`63 = 0x3F`).
 
 `milton_threads_bg.wasm` is **reproducible only from CI**. The threads
 build uses `-Z build-std`, so crate-hash suffixes (`::hXXXX` in the name
@@ -27,6 +54,11 @@ A local `npm run wasm:build` is expected to differ in those hashes.
 CI is the build of record: do not replace a CI-matching blob with a
 local rebuild unless the CI byte-compare is red and you are committing
 CI's own output.
+
+`milton_bg.wasm` and `milton_relaxed_bg.wasm` do not use `build-std`.
+If a local rebuild of either ever diverges from CI at identical section
+sizes (the #50 lesson), CI is still the build of record — document the
+delta here rather than fighting the hash. Do not weaken the byte-compare.
 
 ## How the wasm is produced (builder-side only)
 

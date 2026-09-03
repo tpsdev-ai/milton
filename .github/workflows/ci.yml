@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/committed-wasm"
-          for f in milton_bg.wasm milton.js milton_threads_bg.wasm milton_threads.js; do
+          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js; do
             cp "wasm/$f" "$RUNNER_TEMP/committed-wasm/$f"
           done
           sha256sum "$RUNNER_TEMP/committed-wasm/"*
@@ -83,6 +83,7 @@ jobs:
           name: milton_bg.wasm
           path: |
             wasm/milton_bg.wasm
+            wasm/milton_relaxed_bg.wasm
             wasm/milton_threads_bg.wasm
           if-no-files-found: error
           retention-days: 14
@@ -96,6 +97,9 @@ jobs:
             "$RUNNER_TEMP/committed-wasm/milton_bg.wasm" \
             wasm/milton_bg.wasm
           bash scripts/ci/wasm-section-diff.sh \
+            "$RUNNER_TEMP/committed-wasm/milton_relaxed_bg.wasm" \
+            wasm/milton_relaxed_bg.wasm
+          bash scripts/ci/wasm-section-diff.sh \
             "$RUNNER_TEMP/committed-wasm/milton_threads_bg.wasm" \
             wasm/milton_threads_bg.wasm
       - name: Byte-compare rebuilt wasm vs committed
@@ -103,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           match=true
-          for f in milton_bg.wasm milton.js milton_threads_bg.wasm milton_threads.js; do
+          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js; do
             echo "committed $(sha256sum "$RUNNER_TEMP/committed-wasm/$f")"
             echo "rebuilt   $(sha256sum "wasm/$f")"
             if ! cmp -s "$RUNNER_TEMP/committed-wasm/$f" "wasm/$f"; then
@@ -126,8 +130,10 @@ jobs:
             exit 1
           fi
           echo "ok  q4_lock milton-embed has no MILTON_ROPE_LIBM_SIN"
-      - name: wasm:gate (rebuilt artifact)
+      - name: wasm:gate (rebuilt artifact, auto → relaxed on Node ≥22)
         run: npm run wasm:gate
+      - name: wasm:gate simd128 fallback
+        run: npm run wasm:gate:simd128
       - name: wasm:must-fail
         run: npm run wasm:must-fail
       - name: SAB-absent loader picks single-thread (not an error)
@@ -137,7 +143,7 @@ jobs:
       - name: Fail if wasm is not byte-reproducible
         if: steps.wasm-bytes.outputs.match != 'true'
         run: |
-          echo "fail-closed: byte-compare vs committed wasm/{milton,milton_threads}_{bg.wasm,js} failed" >&2
+          echo "fail-closed: byte-compare vs committed wasm/{milton,milton_relaxed,milton_threads}_{bg.wasm,js} failed" >&2
           exit 1
 
   wasm-compare:
@@ -157,8 +163,12 @@ jobs:
             exit 1
           fi
           echo "ok  default milton-embed has no MILTON_ROPE_LIBM_SIN"
-      - name: wasm:compare two-way expected-outcome
+      - name: wasm:compare two-way expected-outcome (auto → relaxed)
         run: npm run wasm:compare-verdict
+      - name: wasm:compare simd128 fallback (MILTON_RELAXED_SIMD=0)
+        run: npm run wasm:compare:simd128
+      - name: wasm:compare forced-relaxed
+        run: npm run wasm:compare:relaxed
       - name: wasm:compare Q4_K per-k lane
         run: npm run wasm:compare:q4k-perk
       - name: wasm:compare Q4_K (b′) lane
@@ -167,3 +177,19 @@ jobs:
         run: npm run wasm:compare:libm-sin-must-fire
       - name: wasm:compare:threads (tight max_abs=0)
         run: npm run wasm:compare:threads
+
+  wasm-compare-node26:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-ci
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+      - name: Build native milton-embed (AVX2 path)
+        run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
+      - name: wasm:compare on Node 26 (auto → relaxed)
+        run: npm run wasm:compare
+      - name: wasm:compare simd128 fallback on Node 26
+        run: npm run wasm:compare:simd128

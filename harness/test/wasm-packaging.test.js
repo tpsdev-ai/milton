@@ -8,8 +8,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
 const WASM_DIR = join(ROOT, "wasm");
 const WASM = join(WASM_DIR, "milton_bg.wasm");
+const WASM_R = join(WASM_DIR, "milton_relaxed_bg.wasm");
 const WASM_T = join(WASM_DIR, "milton_threads_bg.wasm");
 const GLUE = join(WASM_DIR, "milton.js");
+const GLUE_R = join(WASM_DIR, "milton_relaxed.js");
 const GLUE_T = join(WASM_DIR, "milton_threads.js");
 const SRC = join(ROOT, "src", "index.js");
 const CONFIG = join(ROOT, "crate", ".cargo", "config.toml");
@@ -78,6 +80,23 @@ describe("WASM-SIMD packaging", () => {
     assert.equal(bytes.subarray(0, 4).toString(), "\0asm");
   });
 
+  it("ships a relaxed-SIMD single-thread .wasm (issue #43)", () => {
+    assert.ok(existsSync(WASM_R), `missing ${WASM_R} — builder must run npm run wasm:build`);
+    assert.ok(existsSync(GLUE_R), `missing ${GLUE_R}`);
+    const bytes = readFileSync(WASM_R);
+    assert.ok(bytes.length > 1024, `relaxed wasm too small: ${bytes.length}`);
+    assert.equal(bytes.subarray(0, 4).toString(), "\0asm");
+    const dot = Buffer.from([0xfd, 0x92, 0x02]);
+    const dotAdd = Buffer.from([0xfd, 0x93, 0x02]);
+    assert.ok(
+      bytes.includes(dot) || bytes.includes(dotAdd),
+      "milton_relaxed_bg.wasm has no relaxed-dot opcodes",
+    );
+    assert.equal(readFileSync(WASM).includes(dot), false);
+    assert.equal(readFileSync(WASM).includes(dotAdd), false);
+    assert.equal(wasmImportsSharedMemory(bytes), false);
+  });
+
   it("ships a second prebuilt shared-memory .wasm for Node threads", () => {
     assert.ok(existsSync(WASM_T), `missing ${WASM_T} — builder must run npm run wasm:build`);
     assert.ok(existsSync(GLUE_T), `missing ${GLUE_T}`);
@@ -101,6 +120,7 @@ describe("WASM-SIMD packaging", () => {
     const build = readFileSync(BUILD, "utf8");
     assert.match(build, /target-feature=\+simd128/);
     assert.match(build, /atomics,\+bulk-memory/);
+    assert.match(build, /--features relaxed-simd/);
     assert.match(build, /Consumers do NOT run this/);
   });
 
@@ -113,24 +133,24 @@ describe("WASM-SIMD packaging", () => {
     );
     assert.match(build, /--remap-path-prefix=\$\{ROOT\}=\/milton/);
     assert.match(build, /--remap-path-prefix=\$\{RUSTUP_HOME_DIR\}=\/rustup/);
-    const bytes = readFileSync(WASM);
-    assert.ok(
-      bytes.includes(Buffer.from("/cargo/registry/src")),
-      "committed wasm missing remapped /cargo/registry/src",
-    );
-    assert.ok(
-      bytes.includes(Buffer.from("/rustup")),
-      "committed wasm missing remapped /rustup sysroot",
-    );
-    assert.equal(bytes.includes(Buffer.from("/usr/local/cargo")), false);
-    assert.equal(bytes.includes(Buffer.from("/home/runner/.cargo")), false);
-    assert.equal(bytes.includes(Buffer.from("/usr/local/rustup")), false);
-    assert.equal(bytes.includes(Buffer.from("/home/runner/.rustup")), false);
+    for (const file of [WASM, WASM_R]) {
+      const bytes = readFileSync(file);
+      assert.ok(
+        bytes.includes(Buffer.from("/cargo/registry/src")),
+        `${file} missing remapped /cargo/registry/src`,
+      );
+      assert.equal(bytes.includes(Buffer.from("/usr/local/cargo")), false);
+      assert.equal(bytes.includes(Buffer.from("/home/runner/.cargo")), false);
+      assert.equal(bytes.includes(Buffer.from("/usr/local/rustup")), false);
+      assert.equal(bytes.includes(Buffer.from("/home/runner/.rustup")), false);
+      assert.equal(bytes.includes(Buffer.from("/workspace/")), false);
+    }
   });
 
   it("public glue loads the prebuilt wasm, not a native bin", () => {
     const src = readFileSync(SRC, "utf8");
     assert.match(src, /milton_bg\.wasm/);
+    assert.match(src, /milton_relaxed_bg\.wasm/);
     assert.match(src, /milton_threads_bg\.wasm/);
     assert.match(src, /embed\(text, prefix\)/);
     assert.doesNotMatch(src, /milton-embed/);

@@ -14,6 +14,7 @@ import { createNativeEmbedder } from "../lib/milton-native.js";
 import {
   embed as wasmEmbed,
   lastThreadCount,
+  lastQmatmulKernel,
   lastThreadReport,
   lastWasmArtifact,
 } from "../../src/index.js";
@@ -97,6 +98,7 @@ const receipt = {
   wasm_artifact: lastWasmArtifact,
   wasm_threads: lastThreadCount,
   thread_report: lastThreadReport,
+  qmatmul_kernel: lastQmatmulKernel,
   tight_max_abs: tight ? { expected: 0, got: maxAbs, pass: maxAbs === 0 } : null,
   note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten.",
   cases: rows,

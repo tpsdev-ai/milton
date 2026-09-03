@@ -27,11 +27,18 @@ fi
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128 --remap-path-prefix=${CARGO_HOME_DIR}/registry/src=/cargo/registry/src --remap-path-prefix=${ROOT}=/milton"
 
-cargo build --manifest-path "$CRATE/Cargo.toml" \
-  --target wasm32-unknown-unknown --release --lib --features profile \
-  --target-dir "$CRATE/target/profile-wasm-crate"
+FEATURES="profile"
+TARGET_DIR="$CRATE/target/profile-wasm-crate"
+if [[ "${MILTON_PROFILE_RELAXED:-}" == "1" ]]; then
+  FEATURES="profile,relaxed-simd"
+  TARGET_DIR="$CRATE/target/profile-wasm-relaxed-crate"
+fi
 
-RAW="$CRATE/target/profile-wasm-crate/wasm32-unknown-unknown/release/milton.wasm"
+cargo build --manifest-path "$CRATE/Cargo.toml" \
+  --target wasm32-unknown-unknown --release --lib --features "$FEATURES" \
+  --target-dir "$TARGET_DIR"
+
+RAW="$TARGET_DIR/wasm32-unknown-unknown/release/milton.wasm"
 if [[ ! -f "$RAW" ]]; then
   echo "fail-closed: rustc did not emit $RAW" >&2
   exit 2
