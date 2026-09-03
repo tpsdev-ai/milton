@@ -25,7 +25,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
 import { resolveQmatmulKernel } from "./relaxed-simd.js";
@@ -104,7 +104,9 @@ export let lastWasmFile = null;
  * `sabAvailable` is the capability probe, not "did we pick threads" —
  * `MILTON_THREADS=1` on a SAB host is `{artifact:'single', workers:1, sabAvailable:true}`.
  * `wasm` is the basename actually instantiated (proves the four-way pick).
- * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string } | null}
+ * On a failed load, the same grain is published with `error` (string) and
+ * `wasm` set to the artifact that was attempted — never a prior success.
+ * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string, error?: string } | null}
  */
 export let lastThreadReport = null;
 
@@ -118,11 +120,16 @@ export let lastThreadCount = 1;
  * Q4_K/Q5_K integer-tree pick (issue #43). Same grain as `lastThreadReport`.
  * `probe` is the capability (`WebAssembly.validate` of relaxed-dot), not the pick.
  * Applies on both single-thread and threaded artifacts.
- * @type {{ kernel: 'relaxed' | 'simd128', probe: boolean, forced: boolean } | null}
+ * On a failed load: `{error, wasm}` plus kernel/probe/forced when the pick
+ * completed before the failure. Never a prior success without `error`.
+ * @type {{ kernel?: 'relaxed' | 'simd128', probe?: boolean, forced?: boolean, error?: string, wasm?: string } | null}
  */
 export let lastQmatmulKernel = null;
 
 export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
+
+/** Last successful wasm pick — used to republish after a later successful `load()`. */
+let lastSuccessPick = null;
 
 function publishThreadReport(artifact, workers, wasmFile) {
   lastWasmFile = wasmFile;
@@ -137,70 +144,176 @@ function publishThreadReport(artifact, workers, wasmFile) {
   lastThreadCount = workers;
 }
 
+function rememberSuccess(artifact, workers, wasmFile, kernel) {
+  lastSuccessPick = {
+    artifact,
+    workers,
+    wasmFile,
+    kernel: {
+      kernel: kernel.kernel,
+      probe: Boolean(kernel.probe),
+      forced: Boolean(kernel.forced),
+    },
+  };
+}
+
+function republishLastSuccess() {
+  if (!lastSuccessPick) return;
+  publishThreadReport(
+    lastSuccessPick.artifact,
+    lastSuccessPick.workers,
+    lastSuccessPick.wasmFile,
+  );
+  lastQmatmulKernel = lastSuccessPick.kernel;
+}
+
+/**
+ * Report-facing error string: basename only. Absolute paths in
+ * `err.message` (GGUF-not-found, Node ENOENT) are rewritten so the
+ * published report cannot leak a filesystem path. Refs #54 / Sherlock.
+ */
+function errorText(err, attemptedPath) {
+  let msg = err instanceof Error ? err.message : String(err);
+  if (typeof attemptedPath === "string" && attemptedPath.length > 0) {
+    const base = basename(attemptedPath);
+    if (base && attemptedPath !== base && msg.includes(attemptedPath)) {
+      msg = msg.split(attemptedPath).join(base);
+    }
+  }
+  return msg.replace(
+    /(^|[\s"'`=,:(])(\/(?:[^/\s:"']+\/)+[^/\s:"']+)/g,
+    (_, pre, abs) => `${pre}${basename(abs)}`,
+  );
+}
+
+/**
+ * Every load-failure path publishes both reports so a consumer cannot
+ * read a prior success (or null) after this attempt failed. Refs #54.
+ * `wasmFile` is the basename the loader was trying — never a full path.
+ */
+function publishLoadError(err, { artifact, workers, wasmFile, kernel, attemptedPath } = {}) {
+  const error = errorText(err, attemptedPath);
+  const wasm = wasmFile || lastWasmFile || "";
+  const art =
+    artifact === "threads" || artifact === "single"
+      ? artifact
+      : lastThreadReport?.artifact === "threads"
+        ? "threads"
+        : "single";
+  const w = Number.isFinite(workers) ? workers : lastThreadCount;
+  lastWasmFile = wasm || lastWasmFile;
+  lastThreadReport = {
+    artifact: art,
+    workers: w,
+    availableParallelism: hostParallelism(),
+    sabAvailable: sabAvailable(),
+    wasm,
+    error,
+  };
+  lastWasmArtifact = art;
+  lastThreadCount = w;
+  const pick =
+    kernel && typeof kernel.kernel === "string"
+      ? { kernel: kernel.kernel, probe: Boolean(kernel.probe), forced: Boolean(kernel.forced) }
+      : {};
+  lastQmatmulKernel = { ...pick, error, wasm };
+}
+
 function ensureWasm() {
   if (wasmReady) return wasmReady;
-  const useThreads = canUseWasmThreads();
-  const qk = resolveQmatmulKernel(process.env);
-  const useRelaxedKernel = qk.kernel === "relaxed";
+  let artifact = "single";
+  let workers = 1;
+  let missingName = "milton_relaxed_bg.wasm";
   let path;
-  let missingName;
   let glueModule;
-  if (useThreads) {
-    const useThreadsRelaxed = useRelaxedKernel;
-    path = useThreadsRelaxed ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
-    missingName = useThreadsRelaxed
-      ? "milton_threads_relaxed_bg.wasm"
-      : "milton_threads_bg.wasm";
-    glueModule = useThreadsRelaxed ? GLUE_THREADS_RELAXED : GLUE_THREADS;
-  } else {
-    const useRelaxed = useRelaxedKernel;
-    path = useRelaxed ? WASM_RELAXED_PATH : WASM_PATH;
-    missingName = useRelaxed ? "milton_relaxed_bg.wasm" : "milton_bg.wasm";
-    glueModule = useRelaxed ? "../wasm/milton_relaxed.js" : "../wasm/milton.js";
-  }
-  if (!existsSync(path)) {
-    throw new Error(
-      `fail-closed: prebuilt wasm/${missingName} is missing — this package ships it; do not compile at install`,
-    );
-  }
-  const bytes = readFileSync(path);
-  wasmReady = (async () => {
+  let qk;
+  let useThreads;
+  try {
+    useThreads = canUseWasmThreads();
     if (useThreads) {
-      const m = await import(glueModule);
-      const module = new WebAssembly.Module(bytes);
-      await m.default({ module_or_path: module });
-      const memory = m.wasmMemory();
-      const n = resolveThreadCount();
-      workerPool = await startWorkerPool({
-        module,
-        memory,
-        workerCount: n,
-        miltonSetWorkers: m.miltonSetWorkers,
-        workerGlue: glueModule,
-      });
-      publishThreadReport("threads", workerPool.workerCount, missingName);
-      lastQmatmulKernel = qk;
-      api = m;
-    } else {
-      const m = await import(glueModule);
-      await m.default({ module_or_path: bytes });
-      publishThreadReport("single", 1, missingName);
-      lastQmatmulKernel = qk;
-      api = m;
+      artifact = "threads";
+      workers = resolveThreadCount();
+      missingName = "milton_threads_relaxed_bg.wasm";
     }
-    lastQ4kCalibration = applyQ4kPolicy(
-      {
-        q4kSetForce: api.q4kSetForce,
-        q4kSetThreshold: api.q4kSetThreshold,
-        q4kRunPerk: api.q4kRunPerk,
-        q4kRunBprime: api.q4kRunBprime,
-        q4kThreshold: api.q4kThreshold,
-      },
-      process.env,
-    );
-    return api;
-  })();
-  return wasmReady;
+    qk = resolveQmatmulKernel(process.env);
+    const useRelaxedKernel = qk.kernel === "relaxed";
+    if (useThreads) {
+      path = useRelaxedKernel ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
+      missingName = useRelaxedKernel
+        ? "milton_threads_relaxed_bg.wasm"
+        : "milton_threads_bg.wasm";
+      glueModule = useRelaxedKernel ? GLUE_THREADS_RELAXED : GLUE_THREADS;
+    } else {
+      path = useRelaxedKernel ? WASM_RELAXED_PATH : WASM_PATH;
+      missingName = useRelaxedKernel ? "milton_relaxed_bg.wasm" : "milton_bg.wasm";
+      glueModule = useRelaxedKernel ? "../wasm/milton_relaxed.js" : "../wasm/milton.js";
+    }
+    if (!existsSync(path)) {
+      throw new Error(
+        `fail-closed: prebuilt wasm/${missingName} is missing — this package ships it; do not compile at install`,
+      );
+    }
+    const bytes = readFileSync(path);
+    wasmReady = (async () => {
+      try {
+        if (useThreads) {
+          const m = await import(glueModule);
+          const module = new WebAssembly.Module(bytes);
+          await m.default({ module_or_path: module });
+          const memory = m.wasmMemory();
+          const n = resolveThreadCount();
+          workerPool = await startWorkerPool({
+            module,
+            memory,
+            workerCount: n,
+            miltonSetWorkers: m.miltonSetWorkers,
+            workerGlue: glueModule,
+          });
+          publishThreadReport("threads", workerPool.workerCount, missingName);
+          lastQmatmulKernel = qk;
+          rememberSuccess("threads", workerPool.workerCount, missingName, qk);
+          api = m;
+        } else {
+          const m = await import(glueModule);
+          await m.default({ module_or_path: bytes });
+          publishThreadReport("single", 1, missingName);
+          lastQmatmulKernel = qk;
+          rememberSuccess("single", 1, missingName, qk);
+          api = m;
+        }
+        lastQ4kCalibration = applyQ4kPolicy(
+          {
+            q4kSetForce: api.q4kSetForce,
+            q4kSetThreshold: api.q4kSetThreshold,
+            q4kRunPerk: api.q4kRunPerk,
+            q4kRunBprime: api.q4kRunBprime,
+            q4kThreshold: api.q4kThreshold,
+          },
+          process.env,
+        );
+        return api;
+      } catch (err) {
+        publishLoadError(err, {
+          artifact,
+          workers,
+          wasmFile: missingName,
+          kernel: qk,
+          attemptedPath: path,
+        });
+        throw err;
+      }
+    })();
+    return wasmReady;
+  } catch (err) {
+    publishLoadError(err, {
+      artifact,
+      workers,
+      wasmFile: missingName,
+      kernel: qk,
+      attemptedPath: path,
+    });
+    throw err;
+  }
 }
 
 /**
@@ -210,14 +323,35 @@ function ensureWasm() {
 export async function load(ggufPath) {
   await ensureWasm();
   const path = ggufPath || resolveGguf();
+  const attempted = basename(path);
   if (!existsSync(path)) {
-    throw new Error(
-      `fail-closed: GGUF not found at ${path} — set MILTON_GGUF or run npm run harness:setup`,
+    const err = new Error(
+      `fail-closed: GGUF not found at ${attempted} — set MILTON_GGUF or run npm run harness:setup`,
     );
+    publishLoadError(err, {
+      artifact: lastThreadReport?.artifact,
+      workers: lastThreadCount,
+      wasmFile: attempted,
+      kernel: lastSuccessPick?.kernel ?? lastQmatmulKernel,
+      attemptedPath: path,
+    });
+    throw err;
   }
-  const bytes = readFileSync(path);
-  instance = new api.Milton(bytes);
-  return instance;
+  try {
+    const bytes = readFileSync(path);
+    instance = new api.Milton(bytes);
+    republishLastSuccess();
+    return instance;
+  } catch (err) {
+    publishLoadError(err, {
+      artifact: lastThreadReport?.artifact,
+      workers: lastThreadCount,
+      wasmFile: attempted,
+      kernel: lastSuccessPick?.kernel ?? lastQmatmulKernel,
+      attemptedPath: path,
+    });
+    throw err;
+  }
 }
 
 async function ensureModel() {
