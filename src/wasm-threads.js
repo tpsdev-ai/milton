@@ -88,6 +88,7 @@ export async function startWorkerPool({
         });
       }),
     );
+    worker.unref();
     workers.push(worker);
   }
   await Promise.all(ready);

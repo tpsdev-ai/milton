@@ -68,6 +68,8 @@ let wasmReady = null;
 let instance = null;
 let queue = Promise.resolve();
 let api = null;
+/** Retain Worker handles so GC cannot terminate parked threads. */
+let workerPool = null;
 
 /** Last load-time Q4_K calibration (or forced-variant) report. */
 export let lastQ4kCalibration = null;
@@ -98,14 +100,14 @@ function ensureWasm() {
       await m.default({ module_or_path: module });
       const memory = m.wasmMemory();
       const n = resolveThreadCount();
-      const { workerCount } = await startWorkerPool({
+      workerPool = await startWorkerPool({
         module,
         memory,
         workerCount: n,
         miltonSetWorkers: m.miltonSetWorkers,
       });
       lastWasmArtifact = "threads";
-      lastThreadCount = workerCount;
+      lastThreadCount = workerPool.workerCount;
       api = m;
     } else {
       const m = await import("../wasm/milton.js");
