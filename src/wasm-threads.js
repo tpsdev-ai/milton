@@ -88,7 +88,6 @@ export async function startWorkerPool({
         });
       }),
     );
-    worker.unref();
     workers.push(worker);
   }
   await Promise.all(ready);
@@ -96,5 +95,9 @@ export async function startWorkerPool({
   // set W only once every instance has started so a start-time data
   // apply cannot reset WORKERS to 1 (silent serial fallback).
   miltonSetWorkers(w);
+  // unref after ready: unref-before-ready lets Node exit while we still
+  // await the first message (unsettled TLA / CI hang-or-drop). After
+  // ready, parked workers must not keep the process alive.
+  for (const worker of workers) worker.unref();
   return { workers, workerCount: w };
 }
