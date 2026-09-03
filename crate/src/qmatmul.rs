@@ -55,6 +55,10 @@ pub const QK_K: usize = 256;
 
 /// Output-column split for the threaded artifact. `align` is 8 for Q4_K 8×8.
 /// Remainder columns go to the last worker. No cross-column dependency.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "wasm-threads")),
+    allow(dead_code)
+)]
 pub(crate) fn column_range(
     n_out: usize,
     worker: usize,
