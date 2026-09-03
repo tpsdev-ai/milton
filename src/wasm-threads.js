@@ -95,6 +95,7 @@ export async function startWorkerPool({
   memory,
   workerCount,
   miltonSetWorkers,
+  workerGlue = join(HERE, "..", "wasm", "milton_threads.js"),
 }) {
   const w = Math.max(1, workerCount | 0);
   if (w <= 1) {
@@ -110,6 +111,7 @@ export async function startWorkerPool({
         memory,
         id,
         threadStackSize: THREAD_STACK,
+        workerGlue,
       },
     });
     ready.push(

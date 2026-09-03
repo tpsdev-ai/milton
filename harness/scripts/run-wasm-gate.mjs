@@ -11,7 +11,14 @@ import { f32GatePass } from "../lib/f32-gate.js";
 import { loadEpsilon, loadGoldens } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
 import { createNativeEmbedder } from "../lib/milton-native.js";
-import { embed } from "../../src/index.js";
+import {
+  embed,
+  lastQmatmulKernel,
+  lastThreadReport,
+  lastWasmArtifact,
+  lastWasmFile,
+  lastThreadCount,
+} from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "../..");
@@ -173,6 +180,11 @@ const receipt = {
   failures: f32Failures,
   gated,
   pending: pendingRows,
+  wasm_file: lastWasmFile,
+  wasm_artifact: lastWasmArtifact,
+  wasm_threads: lastThreadCount,
+  thread_report: lastThreadReport,
+  qmatmul_kernel: lastQmatmulKernel,
 };
 
 native.close();

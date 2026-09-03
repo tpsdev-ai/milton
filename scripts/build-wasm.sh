@@ -2,10 +2,16 @@
 # Builder-side WASM-SIMD compile. Consumers do NOT run this.
 # `npm i` uses the prebuilt wasm/milton_bg.wasm — no Rust, no node-gyp.
 #
-# Two artifacts (issue #44):
-#   wasm/milton_bg.wasm          +simd128, ordinary path when SAB is absent
-#   wasm/milton_threads_bg.wasm  +simd128,+atomics,+bulk-memory, shared memory
-# Both remapped so panic locations are host-stable.
+# Four artifacts (issues #44 / #43):
+#   wasm/milton_bg.wasm                   +simd128, bun / probe-fail / MILTON_RELAXED_SIMD=0
+#   wasm/milton_relaxed_bg.wasm           +simd128 + relaxed-simd (Q4_K/Q5_K)
+#   wasm/milton_threads_bg.wasm           +simd128,+atomics,+bulk-memory, shared memory
+#   wasm/milton_threads_relaxed_bg.wasm   threads + relaxed-simd (SAB + relaxed probe)
+# All remapped so panic locations are host-stable.
+# The relaxed artifact is NOT compiled with a global +relaxed-simd RUSTFLAG
+# — only the annotated integer kernels emit those opcodes, so LLVM cannot
+# rewrite the f32 scale stage. The module still fails WebAssembly.validate
+# on bun; JS only loads it after the relaxed-dot probe passes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -72,6 +78,34 @@ if [[ ! -f "$WASM" ]]; then
   exit 2
 fi
 
+# --- relaxed-simd single-thread (issue #43). Separate target-dir. ---
+# Same remap / +simd128 as the ordinary artifact. Crate feature compiles
+# the Q4_K/Q5_K relaxed trees; the functions carry
+# `#[target_feature(enable = "relaxed-simd")]`.
+export RUSTFLAGS="-C target-feature=+simd128 ${REMAP} ${MILTON_WASM_RUSTFLAGS:-}"
+cargo build --manifest-path "$CRATE/Cargo.toml" \
+  --target wasm32-unknown-unknown --release --lib --features relaxed-simd \
+  --target-dir "$CRATE/target/wasm-relaxed"
+
+RAW_R="$CRATE/target/wasm-relaxed/wasm32-unknown-unknown/release/milton.wasm"
+if [[ ! -f "$RAW_R" ]]; then
+  echo "fail-closed: rustc did not emit $RAW_R" >&2
+  exit 2
+fi
+
+wasm-bindgen "$RAW_R" \
+  --out-dir "$OUT" \
+  --target web \
+  --out-name milton_relaxed \
+  --omit-default-module-path
+rm -f "$OUT/.gitignore"
+
+WASM_R="$OUT/milton_relaxed_bg.wasm"
+if [[ ! -f "$WASM_R" ]]; then
+  echo "fail-closed: wasm-bindgen did not emit $WASM_R" >&2
+  exit 2
+fi
+
 # --- threaded (shared memory). rust-src + bootstrap for build-std atomics. ---
 # build-std crate-hash suffixes (hXXXX in the name section) still differ by
 # rust-src host path after remap. CI is the build of record for
@@ -112,7 +146,38 @@ if [[ ! -f "$WASM_T" ]]; then
   exit 2
 fi
 
-python3 - "$WASM" "$WASM_T" <<'PY'
+# --- threaded + relaxed-simd (issue #43 threads gap). Same build-std as above. ---
+(
+  export RUSTC_BOOTSTRAP=1
+  export RUSTFLAGS="${THREADS_RUSTFLAGS}"
+  cargo build --manifest-path "$CRATE/Cargo.toml" \
+    --target wasm32-unknown-unknown --release --lib \
+    --features wasm-threads,relaxed-simd \
+    --target-dir "$CRATE/target/wasm-threads-relaxed" \
+    -Z build-std=std,panic_abort \
+    -Z build-std-features=panic_immediate_abort
+)
+
+RAW_TR="$CRATE/target/wasm-threads-relaxed/wasm32-unknown-unknown/release/milton.wasm"
+if [[ ! -f "$RAW_TR" ]]; then
+  echo "fail-closed: rustc did not emit $RAW_TR" >&2
+  exit 2
+fi
+
+wasm-bindgen "$RAW_TR" \
+  --out-dir "$OUT" \
+  --target web \
+  --out-name milton_threads_relaxed \
+  --omit-default-module-path
+rm -f "$OUT/.gitignore"
+
+WASM_TR="$OUT/milton_threads_relaxed_bg.wasm"
+if [[ ! -f "$WASM_TR" ]]; then
+  echo "fail-closed: wasm-bindgen did not emit $WASM_TR" >&2
+  exit 2
+fi
+
+python3 - "$WASM" "$WASM_T" "$WASM_R" "$WASM_TR" <<'PY'
 import sys
 
 def sections(path):
@@ -171,18 +236,45 @@ def sections(path):
 
 single, s_fd, s_imp, s_sh = sections(sys.argv[1])
 thr, t_fd, t_imp, t_sh = sections(sys.argv[2])
+rel, r_fd, r_imp, r_sh = sections(sys.argv[3])
+thr_rel, tr_fd, tr_imp, tr_sh = sections(sys.argv[4])
+DOT = bytes([0xFD, 0x92, 0x02])  # i16x8.relaxed_dot_i8x16_i7x16_s
+DOT_ADD = bytes([0xFD, 0x93, 0x02])  # i32x4.relaxed_dot_i8x16_i7x16_add_s
 if s_fd == 0:
     print("fail-closed: milton_bg.wasm has no 0xfd SIMD opcodes", file=sys.stderr)
     sys.exit(1)
 if t_fd == 0:
     print("fail-closed: milton_threads_bg.wasm has no 0xfd SIMD opcodes", file=sys.stderr)
     sys.exit(1)
-if s_sh:
-    print("fail-closed: milton_bg.wasm must not import shared memory", file=sys.stderr)
+if r_fd == 0:
+    print("fail-closed: milton_relaxed_bg.wasm has no 0xfd SIMD opcodes", file=sys.stderr)
+    sys.exit(1)
+if tr_fd == 0:
+    print("fail-closed: milton_threads_relaxed_bg.wasm has no 0xfd SIMD opcodes", file=sys.stderr)
+    sys.exit(1)
+if DOT in single or DOT_ADD in single:
+    print("fail-closed: milton_bg.wasm must not contain relaxed-dot opcodes (bun must instantiate it)", file=sys.stderr)
+    sys.exit(1)
+if DOT in thr or DOT_ADD in thr:
+    print("fail-closed: milton_threads_bg.wasm must not contain relaxed-dot opcodes", file=sys.stderr)
+    sys.exit(1)
+if DOT not in rel and DOT_ADD not in rel:
+    print("fail-closed: milton_relaxed_bg.wasm has no relaxed-dot opcodes", file=sys.stderr)
+    sys.exit(1)
+if DOT not in thr_rel and DOT_ADD not in thr_rel:
+    print("fail-closed: milton_threads_relaxed_bg.wasm has no relaxed-dot opcodes", file=sys.stderr)
+    sys.exit(1)
+if s_sh or r_sh:
+    print("fail-closed: single-thread wasm must not import shared memory", file=sys.stderr)
     sys.exit(1)
 if not (t_imp and t_sh):
     print("fail-closed: milton_threads_bg.wasm must import shared memory", file=sys.stderr)
     sys.exit(1)
-print(f"ok  {sys.argv[1]}  bytes={len(single)}  simd_fd_count={s_fd}  shared=0")
-print(f"ok  {sys.argv[2]}  bytes={len(thr)}  simd_fd_count={t_fd}  shared=1")
+if not (tr_imp and tr_sh):
+    print("fail-closed: milton_threads_relaxed_bg.wasm must import shared memory", file=sys.stderr)
+    sys.exit(1)
+print(f"ok  {sys.argv[1]}  bytes={len(single)}  simd_fd_count={s_fd}  shared=0  relaxed_dot=0")
+print(f"ok  {sys.argv[3]}  bytes={len(rel)}  simd_fd_count={r_fd}  shared=0  relaxed_dot=1")
+print(f"ok  {sys.argv[2]}  bytes={len(thr)}  simd_fd_count={t_fd}  shared=1  relaxed_dot=0")
+print(f"ok  {sys.argv[4]}  bytes={len(thr_rel)}  simd_fd_count={tr_fd}  shared=1  relaxed_dot=1")
 PY

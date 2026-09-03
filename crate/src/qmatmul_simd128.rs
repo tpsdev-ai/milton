@@ -6,6 +6,14 @@
 //! plus a bit-exact SIMD128 Q4_K GEMV (native GEMV is already portable
 //! mul+add — vectorizing it must not change the integer products).
 //!
+//! Crate feature `relaxed-simd` (second single-thread artifact only)
+//! replaces the Q4_K / Q5_K integer trees with
+//! `i16x8.relaxed_dot_i8x16_i7x16_s` /
+//! `i32x4.relaxed_dot_i8x16_i7x16_add_s`. Exact because Q4_K 0..15 and
+//! Q5_K 0..31 never set the i7 high bit and the pairwise i16 sum is
+//! ≪ 32767 — not because "the integer dot is deterministic." Q6_K stays
+//! on `madd_i8_pair_i16` (the −32 offset, not the range).
+//!
 //! Portable scalar remains the fallback when this module is not compiled.
 
 use std::arch::wasm32::*;
@@ -30,6 +38,8 @@ unsafe fn load16_i8(p: *const i8) -> v128 {
 }
 
 /// SSE `_mm_maddubs_epi16`: unsigned u8 × signed i8, adjacent pair, sat i16.
+/// Q5_K relaxed-simd path inlines `i16x8.relaxed_dot` inside `q5_sumi`.
+#[cfg(not(feature = "relaxed-simd"))]
 #[inline(always)]
 fn maddubs_epi16(u: v128, s: v128) -> v128 {
     let u_lo = u16x8_extend_low_u8x16(u);
@@ -217,23 +227,8 @@ pub unsafe fn vec_dot_q5_k_q8_k_tile(
             let extract = hsum_i32x4(prod) as f32;
             summs[t] = fmaf32(dmin, extract, summs[t]);
 
-            let mut sumi_lo = i32x4_splat(0);
-            let mut sumi_hi = i32x4_splat(0);
             let q8 = yb.qs.as_ptr();
-
-            for g in 0..8 {
-                let q8_off = g * 32;
-                let q8_lo = load16_i8(q8.add(q8_off));
-                let q8_hi = load16_i8(q8.add(q8_off + 16));
-                sumi_lo = i32x4_add(
-                    sumi_lo,
-                    madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][0], q8_lo)),
-                );
-                sumi_hi = i32x4_add(
-                    sumi_hi,
-                    madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][1], q8_hi)),
-                );
-            }
+            let (sumi_lo, sumi_hi) = unsafe { q5_sumi(q8, &q5v, &sc_i16) };
 
             acc_lo[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo[t]);
             acc_hi[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi[t]);
@@ -243,6 +238,46 @@ pub unsafe fn vec_dot_q5_k_q8_k_tile(
     for t in 0..n_tile {
         out[t] = hsum_float_8(acc_lo[t], acc_hi[t]) + summs[t];
     }
+}
+
+/// One token's Q5_K integer tree for one superblock. f32 scale stays
+/// outside so LLVM cannot rewrite it. Feature `relaxed-simd` puts the
+/// whole 8-group loop under `target_feature` so `relaxed_dot` inlines
+/// (a per-16-product helper call was a regression on QKV).
+#[cfg(not(feature = "relaxed-simd"))]
+#[inline(always)]
+unsafe fn q5_sumi(q8: *const i8, q5v: &[[v128; 2]; 8], sc_i16: &[v128; 8]) -> (v128, v128) {
+    let mut sumi_lo = i32x4_splat(0);
+    let mut sumi_hi = i32x4_splat(0);
+    for g in 0..8 {
+        let q8_off = g * 32;
+        let q8_lo = load16_i8(q8.add(q8_off));
+        let q8_hi = load16_i8(q8.add(q8_off + 16));
+        sumi_lo = i32x4_add(sumi_lo, madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][0], q8_lo)));
+        sumi_hi = i32x4_add(sumi_hi, madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][1], q8_hi)));
+    }
+    (sumi_lo, sumi_hi)
+}
+
+#[cfg(feature = "relaxed-simd")]
+#[target_feature(enable = "relaxed-simd")]
+unsafe fn q5_sumi(q8: *const i8, q5v: &[[v128; 2]; 8], sc_i16: &[v128; 8]) -> (v128, v128) {
+    let mut sumi_lo = i32x4_splat(0);
+    let mut sumi_hi = i32x4_splat(0);
+    for g in 0..8 {
+        let q8_off = g * 32;
+        let q8_lo = load16_i8(q8.add(q8_off));
+        let q8_hi = load16_i8(q8.add(q8_off + 16));
+        sumi_lo = i32x4_add(
+            sumi_lo,
+            madd_epi16(sc_i16[g], i16x8_relaxed_dot_i8x16_i7x16(q8_lo, q5v[g][0])),
+        );
+        sumi_hi = i32x4_add(
+            sumi_hi,
+            madd_epi16(sc_i16[g], i16x8_relaxed_dot_i8x16_i7x16(q8_hi, q5v[g][1])),
+        );
+    }
+    (sumi_lo, sumi_hi)
 }
 
 /// Reconstruct two 32-value Q5 groups (low / high nibble) × two 16-byte
@@ -539,6 +574,7 @@ fn q4k_tile_perk(
             let off = (x * n_blocks + l) * Q4_KX8_BYTES;
             let (d, dmin, ub, qs) = unpack_q4_kx8_header(&repack[off..off + Q4_KX8_BYTES]);
             let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+            #[cfg(not(feature = "relaxed-simd"))]
             for k in 0..16 {
                 let mut v0_lo = [m4; 4];
                 let mut v0_hi = [m4; 4];
@@ -564,6 +600,29 @@ fn q4k_tile_perk(
                             k,
                             &mut iacc[ti],
                         );
+                    }
+                }
+            }
+            #[cfg(feature = "relaxed-simd")]
+            {
+                let _ = m4;
+                let m4i8 = u8x16_splat(0x0F);
+                for k in (0..16).step_by(2) {
+                    let mut v0 = [m4i8; 4];
+                    let mut v0b = [m4i8; 4];
+                    let mut v1 = [m4i8; 4];
+                    let mut v1b = [m4i8; 4];
+                    let (s0a, s1a, s0b, s1b) = stripe_scales(&ub, k);
+                    unsafe {
+                        unpack_stripe16(qs, k, m4i8, &mut v0, &mut v0b, &mut v1, &mut v1b);
+                    }
+                    for ti in 0..tn {
+                        let yb = &qrows[(t0 + ti) * n_blocks + l];
+                        unsafe {
+                            q4k_stripe_iacc16(
+                                &v0, &v0b, &v1, &v1b, &s0a, &s1a, &s0b, &s1b, yb, k, &mut iacc[ti],
+                            );
+                        }
                     }
                 }
             }
@@ -601,6 +660,7 @@ fn q4k_tile_bprime(
     m4: v128,
     out: &mut [f32],
 ) {
+    #[cfg(not(feature = "relaxed-simd"))]
     let ones = i16x8_splat(1);
     for x in g0..g1 {
         let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
@@ -612,6 +672,7 @@ fn q4k_tile_bprime(
             for batch in 0..4 {
                 let mut acc0 = [[i32x4_splat(0); 8]; GEMM_TILE_TOKENS];
                 let mut acc1 = [[i32x4_splat(0); 8]; GEMM_TILE_TOKENS];
+                #[cfg(not(feature = "relaxed-simd"))]
                 for kk in 0..4 {
                     let k = batch * 4 + kk;
                     let mut v0_lo = [m4; 4];
@@ -635,6 +696,29 @@ fn q4k_tile_bprime(
                                 &mut acc0[ti],
                                 &mut acc1[ti],
                             );
+                        }
+                    }
+                }
+                #[cfg(feature = "relaxed-simd")]
+                {
+                    let _ = m4;
+                    let m4i8 = u8x16_splat(0x0F);
+                    for kk in (0..4).step_by(2) {
+                        let k = batch * 4 + kk;
+                        let mut v0 = [m4i8; 4];
+                        let mut v0b = [m4i8; 4];
+                        let mut v1 = [m4i8; 4];
+                        let mut v1b = [m4i8; 4];
+                        unsafe {
+                            unpack_stripe16(qs, k, m4i8, &mut v0, &mut v0b, &mut v1, &mut v1b);
+                        }
+                        for ti in 0..tn {
+                            let yb = &qrows[(t0 + ti) * n_blocks + l];
+                            unsafe {
+                                q4k_stripe_lane_acc16(
+                                    &v0, &v0b, &v1, &v1b, yb, k, &mut acc0[ti], &mut acc1[ti],
+                                );
+                            }
                         }
                     }
                 }
@@ -706,6 +790,7 @@ fn unpack_q4_kx8_header(blk: &[u8]) -> ([f32; 8], [f32; 8], [u8; 128], *const u8
 
 /// 16 bytes = 2 columns × 8 packed nibbles. In-bounds:
 /// `k*64 + pair*16 ≤ 15*64 + 48 = 1008`, `+16 = 1024`.
+#[cfg(not(feature = "relaxed-simd"))]
 #[inline(always)]
 unsafe fn unpack_stripe(
     qs: *const u8,
@@ -728,6 +813,31 @@ unsafe fn unpack_stripe(
     }
 }
 
+/// 16 i8 nibbles per column from stripes `k` and `k+1` (consecutive 8-wide).
+/// `m4` is `u8x16_splat(0x0F)`. In-bounds: `(k+1)*64 + 48 + 16 = 1024` for `k≤14`.
+#[cfg(feature = "relaxed-simd")]
+#[inline(always)]
+unsafe fn unpack_stripe16(
+    qs: *const u8,
+    k: usize,
+    m4: v128,
+    v0: &mut [v128; 4],
+    v0b: &mut [v128; 4],
+    v1: &mut [v128; 4],
+    v1b: &mut [v128; 4],
+) {
+    for pair in 0..4 {
+        let p0 = load16(qs.add(k * 64 + pair * 16));
+        let p1 = load16(qs.add((k + 1) * 64 + pair * 16));
+        let col0 = i8x16_shuffle::<0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23>(p0, p1);
+        let col1 = i8x16_shuffle::<8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31>(p0, p1);
+        v0[pair] = v128_and(col0, m4);
+        v0b[pair] = v128_and(col1, m4);
+        v1[pair] = u8x16_shr(col0, 4);
+        v1b[pair] = u8x16_shr(col1, 4);
+    }
+}
+
 #[inline(always)]
 fn stripe_scales(ub: &[u8; 128], k: usize) -> ([i32; 4], [i32; 4], [i32; 4], [i32; 4]) {
     let scale_base = (k / 4) * 32;
@@ -747,6 +857,7 @@ fn stripe_scales(ub: &[u8; 128], k: usize) -> ([i32; 4], [i32; 4], [i32; 4], [i3
 
 /// Shared integer products + per-stripe scale. Same tree as #45 HEAD.
 /// `a_off+32+7 ≤ 255` (`k≤15`).
+#[cfg(not(feature = "relaxed-simd"))]
 #[inline(always)]
 unsafe fn q4k_stripe_iacc(
     v0_lo: &[v128; 4],
@@ -783,6 +894,7 @@ unsafe fn q4k_stripe_iacc(
 
 /// (b′) keep i32x4 lanes. Same i16 products + `i32x4.dot` pairing as perk;
 /// no hsum / no scale here. `a_off+32+7 ≤ 255` (`k≤15`).
+#[cfg(not(feature = "relaxed-simd"))]
 #[inline(always)]
 unsafe fn q4k_stripe_lane_acc(
     v0_lo: &[v128; 4],
@@ -816,6 +928,62 @@ unsafe fn q4k_stripe_lane_acc(
             acc1[j + 1],
             i32x4_dot_i16x8(i16x8_mul(v1_hi[pair], a1), ones),
         );
+    }
+}
+
+/// 16-wide perk integer tree. `i16x8.relaxed_dot` then the same `hsum_i16x8`
+/// + per-stripe scale. `a_off+32+15 ≤ 255` (`k≤14`, even).
+#[cfg(feature = "relaxed-simd")]
+#[target_feature(enable = "relaxed-simd")]
+unsafe fn q4k_stripe_iacc16(
+    v0: &[v128; 4],
+    v0b: &[v128; 4],
+    v1: &[v128; 4],
+    v1b: &[v128; 4],
+    s0a: &[i32; 4],
+    s1a: &[i32; 4],
+    s0b: &[i32; 4],
+    s1b: &[i32; 4],
+    yb: &BlockQ8K,
+    k: usize,
+    iacc: &mut [i32; 8],
+) {
+    let a_off = (k >> 2) * 64 + (k % 4) * 8;
+    let a0 = load16_i8(yb.qs.as_ptr().add(a_off));
+    let a1 = load16_i8(yb.qs.as_ptr().add(a_off + 32));
+    for pair in 0..4 {
+        let j = pair * 2;
+        let sum0a = hsum_i16x8(i16x8_relaxed_dot_i8x16_i7x16(a0, v0[pair]));
+        let sum1a = hsum_i16x8(i16x8_relaxed_dot_i8x16_i7x16(a1, v1[pair]));
+        let sum0b = hsum_i16x8(i16x8_relaxed_dot_i8x16_i7x16(a0, v0b[pair]));
+        let sum1b = hsum_i16x8(i16x8_relaxed_dot_i8x16_i7x16(a1, v1b[pair]));
+        iacc[j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
+        iacc[j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
+    }
+}
+
+/// 16-wide (b′) accumulate. `i32x4.relaxed_dot_add` keeps lanes.
+#[cfg(feature = "relaxed-simd")]
+#[target_feature(enable = "relaxed-simd")]
+unsafe fn q4k_stripe_lane_acc16(
+    v0: &[v128; 4],
+    v0b: &[v128; 4],
+    v1: &[v128; 4],
+    v1b: &[v128; 4],
+    yb: &BlockQ8K,
+    k: usize,
+    acc0: &mut [v128; 8],
+    acc1: &mut [v128; 8],
+) {
+    let a_off = (k >> 2) * 64 + (k % 4) * 8;
+    let a0 = load16_i8(yb.qs.as_ptr().add(a_off));
+    let a1 = load16_i8(yb.qs.as_ptr().add(a_off + 32));
+    for pair in 0..4 {
+        let j = pair * 2;
+        acc0[j] = i32x4_relaxed_dot_i8x16_i7x16_add(a0, v0[pair], acc0[j]);
+        acc0[j + 1] = i32x4_relaxed_dot_i8x16_i7x16_add(a0, v0b[pair], acc0[j + 1]);
+        acc1[j] = i32x4_relaxed_dot_i8x16_i7x16_add(a1, v1[pair], acc1[j]);
+        acc1[j + 1] = i32x4_relaxed_dot_i8x16_i7x16_add(a1, v1b[pair], acc1[j + 1]);
     }
 }
 

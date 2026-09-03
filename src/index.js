@@ -5,11 +5,19 @@
  * with +simd128. Prefix is config (`document` | `query` | `none`); templates
  * are `search_document: ` / `search_query: ` / passthrough (load-bearing space).
  *
- * Two artifacts, one loader (Refs #44). The shared-memory module is used
- * only when SharedArrayBuffer + Atomics exist, WebAssembly.validate
+ * Two thread artifacts, one loader (Refs #44). The shared-memory module is
+ * used only when SharedArrayBuffer + Atomics exist, WebAssembly.validate
  * accepts a shared-memory probe, and the pool would be larger than 1.
- * `MILTON_THREADS=1` forces `wasm/milton_bg.wasm` (not threads-with-W=1).
+ * `MILTON_THREADS=1` forces the single-thread module (not threads-with-W=1).
  * Absence of SAB is the ordinary path — not an error.
+ *
+ * Single-thread pick (Refs #43): `WebAssembly.validate` of a relaxed-dot
+ * probe loads `wasm/milton_relaxed_bg.wasm`; otherwise `milton_bg.wasm`.
+ * Threaded pick: when SAB + pool > 1, load `milton_threads_relaxed_bg.wasm`
+ * when the relaxed probe passes, else `milton_threads_bg.wasm`.
+ * `MILTON_RELAXED_SIMD=0` forces simd128 on both paths; `=1` fail-closes
+ * if the probe rejects. Never a Node version sniff — bun validates SIMD128
+ * and rejects the relaxed probe.
  *
  * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
  * refuses. No native compile and no per-platform build at install.
@@ -20,6 +28,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
+import { resolveQmatmulKernel } from "./relaxed-simd.js";
 import {
   canUseWasmThreads,
   hostParallelism,
@@ -28,9 +37,15 @@ import {
   startWorkerPool,
 } from "./wasm-threads.js";
 
+export { probeRelaxedSimd, resolveQmatmulKernel } from "./relaxed-simd.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WASM_PATH = join(ROOT, "wasm", "milton_bg.wasm");
+const WASM_RELAXED_PATH = join(ROOT, "wasm", "milton_relaxed_bg.wasm");
 const WASM_THREADS_PATH = join(ROOT, "wasm", "milton_threads_bg.wasm");
+const WASM_THREADS_RELAXED_PATH = join(ROOT, "wasm", "milton_threads_relaxed_bg.wasm");
+const GLUE_THREADS = "../wasm/milton_threads.js";
+const GLUE_THREADS_RELAXED = "../wasm/milton_threads_relaxed.js";
 
 const PREFIX_KINDS = new Set(["document", "query", "none"]);
 
@@ -38,8 +53,12 @@ export function resolveWasmPath() {
   return WASM_PATH;
 }
 
-export function resolveThreadsWasmPath() {
-  return WASM_THREADS_PATH;
+export function resolveThreadsWasmPath(relaxed = false) {
+  return relaxed ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
+}
+
+export function resolveRelaxedWasmPath() {
+  return WASM_RELAXED_PATH;
 }
 
 export function resolveGguf(env = process.env) {
@@ -77,11 +96,15 @@ let workerPool = null;
 /** Last load-time Q4_K calibration (or forced-variant) report. */
 export let lastQ4kCalibration = null;
 
+/** Basename of the `.wasm` file this process actually instantiated. */
+export let lastWasmFile = null;
+
 /**
  * Loader path report (Flint #50 ASK). Same grain as `lastQ4kCalibration`.
  * `sabAvailable` is the capability probe, not "did we pick threads" —
  * `MILTON_THREADS=1` on a SAB host is `{artifact:'single', workers:1, sabAvailable:true}`.
- * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean } | null}
+ * `wasm` is the basename actually instantiated (proves the four-way pick).
+ * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string } | null}
  */
 export let lastThreadReport = null;
 
@@ -91,14 +114,24 @@ export let lastWasmArtifact = null;
 /** Pool size after load. `1` on the single-thread artifact. */
 export let lastThreadCount = 1;
 
+/**
+ * Q4_K/Q5_K integer-tree pick (issue #43). Same grain as `lastThreadReport`.
+ * `probe` is the capability (`WebAssembly.validate` of relaxed-dot), not the pick.
+ * Applies on both single-thread and threaded artifacts.
+ * @type {{ kernel: 'relaxed' | 'simd128', probe: boolean, forced: boolean } | null}
+ */
+export let lastQmatmulKernel = null;
+
 export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
 
-function publishThreadReport(artifact, workers) {
+function publishThreadReport(artifact, workers, wasmFile) {
+  lastWasmFile = wasmFile;
   lastThreadReport = {
     artifact,
     workers,
     availableParallelism: hostParallelism(),
     sabAvailable: sabAvailable(),
+    wasm: wasmFile,
   };
   lastWasmArtifact = artifact;
   lastThreadCount = workers;
@@ -107,17 +140,33 @@ function publishThreadReport(artifact, workers) {
 function ensureWasm() {
   if (wasmReady) return wasmReady;
   const useThreads = canUseWasmThreads();
-  const path = useThreads ? WASM_THREADS_PATH : WASM_PATH;
-  const label = useThreads ? "threads" : "single";
+  const qk = resolveQmatmulKernel(process.env);
+  const useRelaxedKernel = qk.kernel === "relaxed";
+  let path;
+  let missingName;
+  let glueModule;
+  if (useThreads) {
+    const useThreadsRelaxed = useRelaxedKernel;
+    path = useThreadsRelaxed ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
+    missingName = useThreadsRelaxed
+      ? "milton_threads_relaxed_bg.wasm"
+      : "milton_threads_bg.wasm";
+    glueModule = useThreadsRelaxed ? GLUE_THREADS_RELAXED : GLUE_THREADS;
+  } else {
+    const useRelaxed = useRelaxedKernel;
+    path = useRelaxed ? WASM_RELAXED_PATH : WASM_PATH;
+    missingName = useRelaxed ? "milton_relaxed_bg.wasm" : "milton_bg.wasm";
+    glueModule = useRelaxed ? "../wasm/milton_relaxed.js" : "../wasm/milton.js";
+  }
   if (!existsSync(path)) {
     throw new Error(
-      `fail-closed: prebuilt wasm/${label === "threads" ? "milton_threads_bg.wasm" : "milton_bg.wasm"} is missing — this package ships it; do not compile at install`,
+      `fail-closed: prebuilt wasm/${missingName} is missing — this package ships it; do not compile at install`,
     );
   }
   const bytes = readFileSync(path);
   wasmReady = (async () => {
     if (useThreads) {
-      const m = await import("../wasm/milton_threads.js");
+      const m = await import(glueModule);
       const module = new WebAssembly.Module(bytes);
       await m.default({ module_or_path: module });
       const memory = m.wasmMemory();
@@ -127,13 +176,16 @@ function ensureWasm() {
         memory,
         workerCount: n,
         miltonSetWorkers: m.miltonSetWorkers,
+        workerGlue: glueModule,
       });
-      publishThreadReport("threads", workerPool.workerCount);
+      publishThreadReport("threads", workerPool.workerCount, missingName);
+      lastQmatmulKernel = qk;
       api = m;
     } else {
-      const m = await import("../wasm/milton.js");
+      const m = await import(glueModule);
       await m.default({ module_or_path: bytes });
-      publishThreadReport("single", 1);
+      publishThreadReport("single", 1, missingName);
+      lastQmatmulKernel = qk;
       api = m;
     }
     lastQ4kCalibration = applyQ4kPolicy(
