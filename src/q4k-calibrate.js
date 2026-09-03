@@ -7,9 +7,14 @@
  * Work bound: one superblock × 32 tokens, both variants, plus n=1 so the
  * crossover is measured rather than assumed. Threshold rule is documented
  * in the #46 plan-first comment.
+ *
+ * WARMUP=100 (Kern #47): V8 Liftoff → TurboFan is invocation-driven. Two
+ * warmups measured the baseline compiler; the steady-state embedder runs
+ * TurboFan. Node 22 default `--wasm-tiering-budget=13000000` (byte budget,
+ * not a 30-call count). 100 calls is the review ASK; report cost_ms.
  */
 
-const WARMUP = 2;
+const WARMUP = 100;
 const SAMPLES = 8;
 
 function median(xs) {
