@@ -23,11 +23,40 @@ describe("Q4_K load-time threshold rule", () => {
   });
 });
 
-describe("Q4_K applyQ4kPolicy with all-k not shipped", () => {
+/** Scripted clock: each timed call (now / fn / now) consumes one duration. */
+function scriptedNow(durations) {
+  let t = 0;
+  let i = 0;
+  let pending = null;
+  return () => {
+    if (pending == null) {
+      pending = durations[Math.min(i, durations.length - 1)];
+      i += 1;
+      return t;
+    }
+    t += pending;
+    pending = null;
+    return t;
+  };
+}
+
+/** perk32, perk1, bprime32, bprime1 — WARMUP+SAMPLES each. */
+function durationsFor(perk32, perk1, bprime32, bprime1) {
+  const n = WARMUP + SAMPLES;
+  return [
+    ...Array(n).fill(perk32),
+    ...Array(n).fill(perk1),
+    ...Array(n).fill(bprime32),
+    ...Array(n).fill(bprime1),
+  ];
+}
+
+describe("Q4_K applyQ4kPolicy with perk + (b′) shipped", () => {
   function mockApi(threshold = 33) {
     let force = "auto";
     let t = threshold;
-    const calls = { 1: 0, 32: 0 };
+    const perkCalls = { 1: 0, 32: 0 };
+    const bprimeCalls = { 1: 0, 32: 0 };
     return {
       q4kSetForce(name) {
         force = name;
@@ -39,29 +68,64 @@ describe("Q4_K applyQ4kPolicy with all-k not shipped", () => {
         return t;
       },
       q4kRunPerk(n) {
-        calls[n] = (calls[n] || 0) + 1;
+        perkCalls[n] = (perkCalls[n] || 0) + 1;
+      },
+      q4kRunBprime(n) {
+        bprimeCalls[n] = (bprimeCalls[n] || 0) + 1;
       },
       lastForce: () => force,
-      calls,
+      perkCalls,
+      bprimeCalls,
+      // legacy alias used by older assertions
+      get calls() {
+        return perkCalls;
+      },
     };
   }
 
-  it("auto times perk (WARMUP+SAMPLES at n=32 and n=1) then writes threshold 33", () => {
+  it("auto times perk and bprime (WARMUP+SAMPLES at n=32 and n=1)", () => {
     const api = mockApi();
+    api.now = scriptedNow(durationsFor(10, 1, 12, 2));
     const report = applyQ4kPolicy(api, {});
     assert.equal(report.mode, "auto");
     assert.equal(report.forced, false);
-    assert.equal(report.threshold, 33);
     assert.equal(report.max_abs, null);
-    assert.deepEqual(report.shipped_variants, ["perk"]);
+    assert.deepEqual(report.shipped_variants, ["perk", "bprime"]);
     assert.equal(api.lastForce(), "auto");
-    assert.equal(api.calls[32], WARMUP + SAMPLES);
-    assert.equal(api.calls[1], WARMUP + SAMPLES);
+    assert.equal(api.perkCalls[32], WARMUP + SAMPLES);
+    assert.equal(api.perkCalls[1], WARMUP + SAMPLES);
+    assert.equal(api.bprimeCalls[32], WARMUP + SAMPLES);
+    assert.equal(api.bprimeCalls[1], WARMUP + SAMPLES);
     assert.equal(typeof report.perk_n32_ms, "number");
     assert.equal(typeof report.perk_n32_first5_ms, "number");
     assert.equal(typeof report.perk_n32_last5_ms, "number");
     assert.equal(typeof report.perk_n32_warmup_verdict, "string");
+    assert.equal(typeof report.bprime_n32_ms, "number");
+    assert.equal(typeof report.bprime_n32_first5_ms, "number");
+    assert.equal(typeof report.bprime_n32_last5_ms, "number");
+    assert.equal(typeof report.bprime_n32_warmup_verdict, "string");
     assert.equal(report.allk_n32_ms, null);
+  });
+
+  it("auto fail-closes to threshold 33 when bprime loses n=32", () => {
+    const api = mockApi();
+    api.now = scriptedNow(durationsFor(10, 1, 12, 2));
+    const report = applyQ4kPolicy(api, {});
+    assert.equal(report.threshold, 33);
+    assert.equal(report.perk_n32_ms, 10);
+    assert.equal(report.bprime_n32_ms, 12);
+  });
+
+  it("auto writes the interpolated crossover when bprime wins n=32", () => {
+    const api = mockApi();
+    // perk1=1, perk32=10, bprime1=4, bprime32=8 → ceil(19.6) = 20
+    api.now = scriptedNow(durationsFor(10, 1, 8, 4));
+    const report = applyQ4kPolicy(api, {});
+    assert.equal(report.threshold, 20);
+    assert.equal(report.perk_n1_ms, 1);
+    assert.equal(report.perk_n32_ms, 10);
+    assert.equal(report.bprime_n1_ms, 4);
+    assert.equal(report.bprime_n32_ms, 8);
   });
 
   it("auto fail-closes when q4kRunPerk is missing (no silent 33)", () => {
@@ -73,17 +137,40 @@ describe("Q4_K applyQ4kPolicy with all-k not shipped", () => {
     );
   });
 
+  it("auto fail-closes when q4kRunBprime is missing (no silent 33)", () => {
+    const api = mockApi();
+    delete api.q4kRunBprime;
+    assert.throws(
+      () => applyQ4kPolicy(api, {}),
+      /requires q4kRunBprime/,
+    );
+  });
+
   it("force perk is still allowed", () => {
     const api = mockApi(33);
     const report = applyQ4kPolicy(api, { MILTON_Q4K_VARIANT: "perk" });
     assert.equal(report.mode, "perk");
     assert.equal(report.forced, true);
     assert.equal(api.lastForce(), "perk");
-    assert.equal(api.calls[32], 0);
+    assert.equal(api.perkCalls[32], 0);
+    assert.equal(api.bprimeCalls[32], 0);
+  });
+
+  it("force bprime (and aliases) short-circuits without timing", () => {
+    for (const raw of ["bprime", "b-prime", "b_prime", "BPRIME", "b'"]) {
+      const api = mockApi(33);
+      const report = applyQ4kPolicy(api, { MILTON_Q4K_VARIANT: raw });
+      assert.equal(report.mode, "bprime", raw);
+      assert.equal(report.forced, true, raw);
+      assert.equal(api.lastForce(), "bprime", raw);
+      assert.equal(api.perkCalls[32], 0, raw);
+      assert.equal(api.bprimeCalls[32], 0, raw);
+    }
   });
 
   it("env=allk loads (no throw), warns, and reports auto not all-k", () => {
     const api = mockApi();
+    api.now = scriptedNow(durationsFor(10, 1, 12, 2));
     const warnings = [];
     const orig = console.warn;
     console.warn = (msg) => {
