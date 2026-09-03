@@ -1,17 +1,21 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `auto`).
- * `allk` is not shipped — JS fail-closes before this is called.
- * Does not live in the wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
+ * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `bprime` | `auto`).
+ * `allk` is not shipped — JS warns and falls through. Does not live in the
+ * wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
  */
 export function q4kSetForce(name: string): void;
 export function q4kSetThreshold(t: number): void;
 export function q4kThreshold(): number;
 /**
- * One synthetic superblock × `n_tokens` of the shipped per-k tile (framework).
+ * One synthetic superblock × `n_tokens` of the shipped per-k tile.
  */
 export function q4kRunPerk(n_tokens: number): void;
+/**
+ * One synthetic superblock × `n_tokens` of the (b′) lane-wise tile.
+ */
+export function q4kRunBprime(n_tokens: number): void;
 /**
  * In-process embedder loaded from GGUF bytes.
  */
@@ -44,6 +48,7 @@ export interface InitOutput {
   readonly q4kSetThreshold: (a: number) => void;
   readonly q4kThreshold: () => number;
   readonly q4kRunPerk: (a: number) => void;
+  readonly q4kRunBprime: (a: number) => void;
   readonly __wbindgen_export_0: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __externref_table_dealloc: (a: number) => void;

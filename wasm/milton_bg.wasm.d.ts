@@ -10,6 +10,7 @@ export const q4kSetForce: (a: number, b: number) => void;
 export const q4kSetThreshold: (a: number) => void;
 export const q4kThreshold: () => number;
 export const q4kRunPerk: (a: number) => void;
+export const q4kRunBprime: (a: number) => void;
 export const __wbindgen_export_0: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __externref_table_dealloc: (a: number) => void;
