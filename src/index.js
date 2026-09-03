@@ -18,6 +18,7 @@ import init, {
   q4kSetForce,
   q4kSetThreshold,
   q4kRunPerk,
+  q4kRunBprime,
   q4kThreshold,
 } from "../wasm/milton.js";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
@@ -77,6 +78,7 @@ function ensureWasm() {
         q4kSetForce,
         q4kSetThreshold,
         q4kRunPerk,
+        q4kRunBprime,
         q4kThreshold,
       },
       process.env,

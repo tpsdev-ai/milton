@@ -417,20 +417,20 @@ pub fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut
     gemm_q4_k_8x8_q8_k(repack, y, 1, n_out, out);
 }
 
-/// Load-time Q4_K policy framework (JS `applyQ4kPolicy`). FORCE / THRESHOLD
-/// stay so a later letter ((b′) lane-wise scale) can plug a second variant
-/// in without a new glue shape. All-k (`Q4kUnpacked`) is **not shipped**:
-/// after WARMUP=100, the optimized tier (`--no-liftoff`) and M4 both stay
-/// at threshold 33 (always per-k). Unknown / `allk` names store AUTO.
-/// Uncalibrated default is 33 = always per-k (#45 HEAD).
+/// Load-time Q4_K policy framework (JS `applyQ4kPolicy`). Two shipped
+/// variants: per-k (#45/#47) and (b′) lane-wise per-32 scale (#48).
+/// All-k (`Q4kUnpacked`) is **not shipped**. Unknown / `allk` names store
+/// AUTO. Uncalibrated default is 33 = always per-k.
 const Q4K_FORCE_AUTO: u32 = 0;
 const Q4K_FORCE_PERK: u32 = 1;
+const Q4K_FORCE_BPRIME: u32 = 2;
 static Q4K_FORCE: AtomicU32 = AtomicU32::new(Q4K_FORCE_AUTO);
 static Q4K_THRESHOLD: AtomicU32 = AtomicU32::new(33);
 
 pub(crate) fn q4k_set_force(name: &str) {
     let v = match name {
         "perk" | "per-k" | "per_k" => Q4K_FORCE_PERK,
+        "bprime" | "b-prime" | "b_prime" | "b'" => Q4K_FORCE_BPRIME,
         _ => Q4K_FORCE_AUTO,
     };
     Q4K_FORCE.store(v, Ordering::Relaxed);
@@ -444,12 +444,10 @@ pub(crate) fn q4k_threshold() -> u32 {
     Q4K_THRESHOLD.load(Ordering::Relaxed)
 }
 
-/// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. One shipped inner loop:
-/// **per-k hoist** — #45's integer tree and f32 mul+add, outlined into
-/// `q4k_tile_perk` (`#[inline(never)]`) so LLVM/V8 see a smaller function.
-/// All-k is not in this binary. Do not switch this to FMA. (b) per-32
-/// scale-as-built is out. FORCE is stored for the framework; dispatch
-/// ignores it until a second variant returns.
+/// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. Two shipped inner loops:
+/// **per-k** (`q4k_tile_perk`) and **(b′) lane-wise scale** (`q4k_tile_bprime`).
+/// Auto: `tn >= threshold` → (b′); default threshold 33 = always per-k.
+/// Do not switch this to FMA. Dropped (b) per-32 addv-on-critical-path is out.
 pub fn gemm_q4_k_8x8_q8_k(
     repack: &[u8],
     qrows: &[BlockQ8K],
@@ -463,10 +461,21 @@ pub fn gemm_q4_k_8x8_q8_k(
     debug_assert_eq!(out.len(), n_tokens * n_out);
     let n_groups = n_out / 8;
     let m4 = i16x8_splat(0x0F);
+    let force = Q4K_FORCE.load(Ordering::Relaxed);
+    let threshold = Q4K_THRESHOLD.load(Ordering::Relaxed);
 
     for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
         let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
-        q4k_tile_perk(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+        let use_bprime = match force {
+            Q4K_FORCE_BPRIME => true,
+            Q4K_FORCE_PERK => false,
+            _ => (tn as u32) >= threshold,
+        };
+        if use_bprime {
+            q4k_tile_bprime(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+        } else {
+            q4k_tile_perk(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+        }
     }
 }
 
@@ -517,6 +526,92 @@ fn q4k_tile_perk(
                             &mut iacc[ti],
                         );
                     }
+                }
+            }
+            q4k_mins_f32(
+                qrows,
+                t0,
+                tn,
+                n_blocks,
+                l,
+                &d,
+                &dmin,
+                &ub,
+                &iacc,
+                &mut sumf,
+                &mut sum_minf,
+            );
+        }
+        write_tile_out(out, t0, tn, n_out, x, &sumf, &sum_minf);
+    }
+}
+
+/// (b′) lane-wise per-32 scale. Same per-k unpack (small locals, tokens inner).
+/// Keep `i32x4.dot` lanes through four batches, `i32x4_mul(acc, splat(scale))`,
+/// one `hsum_i32x4` per column per superblock. Not dropped (b) at `3016397`.
+#[inline(never)]
+fn q4k_tile_bprime(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    t0: usize,
+    tn: usize,
+    n_blocks: usize,
+    n_groups: usize,
+    n_out: usize,
+    m4: v128,
+    out: &mut [f32],
+) {
+    let ones = i16x8_splat(1);
+    for x in 0..n_groups {
+        let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+        let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+        for l in 0..n_blocks {
+            let off = (x * n_blocks + l) * Q4_KX8_BYTES;
+            let (d, dmin, ub, qs) = unpack_q4_kx8_header(&repack[off..off + Q4_KX8_BYTES]);
+            let mut sb_acc = [[i32x4_splat(0); 8]; GEMM_TILE_TOKENS];
+            for batch in 0..4 {
+                let mut acc0 = [[i32x4_splat(0); 8]; GEMM_TILE_TOKENS];
+                let mut acc1 = [[i32x4_splat(0); 8]; GEMM_TILE_TOKENS];
+                for kk in 0..4 {
+                    let k = batch * 4 + kk;
+                    let mut v0_lo = [m4; 4];
+                    let mut v0_hi = [m4; 4];
+                    let mut v1_lo = [m4; 4];
+                    let mut v1_hi = [m4; 4];
+                    unsafe {
+                        unpack_stripe(qs, k, m4, &mut v0_lo, &mut v0_hi, &mut v1_lo, &mut v1_hi);
+                    }
+                    for ti in 0..tn {
+                        let yb = &qrows[(t0 + ti) * n_blocks + l];
+                        unsafe {
+                            q4k_stripe_lane_acc(
+                                &v0_lo,
+                                &v0_hi,
+                                &v1_lo,
+                                &v1_hi,
+                                yb,
+                                k,
+                                ones,
+                                &mut acc0[ti],
+                                &mut acc1[ti],
+                            );
+                        }
+                    }
+                }
+                let scale_base = batch * 32;
+                for ti in 0..tn {
+                    for j in 0..8 {
+                        let s0 = i32x4_splat(i32::from(ub[scale_base + j]));
+                        let s1 = i32x4_splat(i32::from(ub[scale_base + 16 + j]));
+                        sb_acc[ti][j] = i32x4_add(sb_acc[ti][j], i32x4_mul(acc0[ti][j], s0));
+                        sb_acc[ti][j] = i32x4_add(sb_acc[ti][j], i32x4_mul(acc1[ti][j], s1));
+                    }
+                }
+            }
+            let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+            for ti in 0..tn {
+                for j in 0..8 {
+                    iacc[ti][j] = hsum_i32x4(sb_acc[ti][j]);
                 }
             }
             q4k_mins_f32(
@@ -646,6 +741,44 @@ unsafe fn q4k_stripe_iacc(
     }
 }
 
+/// (b′) keep i32x4 lanes. Same i16 products + `i32x4.dot` pairing as perk;
+/// no hsum / no scale here. `a_off+32+7 ≤ 255` (`k≤15`).
+#[inline(always)]
+unsafe fn q4k_stripe_lane_acc(
+    v0_lo: &[v128; 4],
+    v0_hi: &[v128; 4],
+    v1_lo: &[v128; 4],
+    v1_hi: &[v128; 4],
+    yb: &BlockQ8K,
+    k: usize,
+    ones: v128,
+    acc0: &mut [v128; 8],
+    acc1: &mut [v128; 8],
+) {
+    let a_off = (k >> 2) * 64 + (k % 4) * 8;
+    let a0 = i16x8_extend_low_i8x16(u64x2(
+        ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
+        0,
+    ));
+    let a1 = i16x8_extend_low_i8x16(u64x2(
+        ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
+        0,
+    ));
+    for pair in 0..4 {
+        let j = pair * 2;
+        acc0[j] = i32x4_add(acc0[j], i32x4_dot_i16x8(i16x8_mul(v0_lo[pair], a0), ones));
+        acc0[j + 1] = i32x4_add(
+            acc0[j + 1],
+            i32x4_dot_i16x8(i16x8_mul(v0_hi[pair], a0), ones),
+        );
+        acc1[j] = i32x4_add(acc1[j], i32x4_dot_i16x8(i16x8_mul(v1_lo[pair], a1), ones));
+        acc1[j + 1] = i32x4_add(
+            acc1[j + 1],
+            i32x4_dot_i16x8(i16x8_mul(v1_hi[pair], a1), ones),
+        );
+    }
+}
+
 fn q4k_mins_f32(
     qrows: &[BlockQ8K],
     t0: usize,
@@ -748,8 +881,7 @@ fn synth_q8(n: usize) -> Vec<BlockQ8K> {
         .collect()
 }
 
-/// One superblock × `n_tokens` of the shipped per-k tile. Framework hook
-/// for a later second-variant letter; not timed at init while only perk ships.
+/// One superblock × `n_tokens` of the shipped per-k tile.
 pub(crate) fn q4k_run_perk(n_tokens: u32) {
     let n = (n_tokens as usize).clamp(1, GEMM_TILE_TOKENS);
     let repack = synth_repack();
@@ -757,5 +889,16 @@ pub(crate) fn q4k_run_perk(n_tokens: u32) {
     let m4 = i16x8_splat(0x0F);
     let mut out = [0.0f32; GEMM_TILE_TOKENS * 8];
     q4k_tile_perk(&repack, &qrows, 0, n, 1, 1, 8, m4, &mut out);
+    std::hint::black_box(out[0]);
+}
+
+/// One superblock × `n_tokens` of the (b′) lane-wise tile.
+pub(crate) fn q4k_run_bprime(n_tokens: u32) {
+    let n = (n_tokens as usize).clamp(1, GEMM_TILE_TOKENS);
+    let repack = synth_repack();
+    let qrows = synth_q8(n);
+    let m4 = i16x8_splat(0x0F);
+    let mut out = [0.0f32; GEMM_TILE_TOKENS * 8];
+    q4k_tile_bprime(&repack, &qrows, 0, n, 1, 1, 8, m4, &mut out);
     std::hint::black_box(out[0]);
 }

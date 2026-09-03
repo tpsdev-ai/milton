@@ -2,10 +2,11 @@
  * Load-time Q4_K calibration framework.
  *
  * WARMUP=100 (Kern #47): V8 Liftoff → TurboFan is invocation-driven.
- * The auto path **times** the shipped variant(s) — it does not short-circuit
- * to threshold 33 without measuring. All-k (`Q4kUnpacked`) is not in the
- * wasm, so the only timed kernel is per-k; threshold stays 33 after the
- * measurement. Crossover math is unchanged for a later letter ((b′)).
+ * Auto times both shipped variants — perk and (b′) — at n=1 and n=32,
+ * then `crossoverThreshold`. Fail-closed: if (b′) does not win the full
+ * tile (n=32), threshold stays 33 (never pick it). All-k is not in the
+ * wasm. Crossover math is unchanged; the second-variant pair is now
+ * bprime timings.
  *
  * The report carries median(first 5 warmup calls) vs median(last 5) so
  * a Liftoff → TurboFan step is visible. Calibration cannot change
@@ -15,10 +16,18 @@
 const WARMUP = 100;
 const SAMPLES = 8;
 
+const BPRIME_ALIASES = new Set(["bprime", "b-prime", "b_prime", "b'"]);
+const PERK_ALIASES = new Set(["perk", "per-k", "per_k"]);
+const ALLK_ALIASES = new Set(["allk", "all-k", "all_k"]);
+
 function median(xs) {
   const a = xs.slice().sort((x, y) => x - y);
   const mid = Math.floor(a.length / 2);
   return a.length % 2 ? a[mid] : 0.5 * (a[mid - 1] + a[mid]);
+}
+
+function nowFn(api) {
+  return typeof api.now === "function" ? api.now : () => performance.now();
 }
 
 /**
@@ -26,18 +35,18 @@ function median(xs) {
  * first5 / last5 are medians of the warmup window — equal means no
  * observable tier-up during those 100 invocations.
  */
-function timeCalls(fn, n) {
+function timeCalls(fn, n, now = () => performance.now()) {
   const warmup = [];
   for (let i = 0; i < WARMUP; i += 1) {
-    const t0 = performance.now();
+    const t0 = now();
     fn();
-    warmup.push(performance.now() - t0);
+    warmup.push(now() - t0);
   }
   const samples = [];
   for (let i = 0; i < SAMPLES; i += 1) {
-    const t0 = performance.now();
+    const t0 = now();
     fn();
-    samples.push(performance.now() - t0);
+    samples.push(now() - t0);
   }
   const first5_ms = median(warmup.slice(0, 5));
   const last5_ms = median(warmup.slice(-5));
@@ -70,18 +79,30 @@ export function crossoverThreshold(perk1, perk32, allk1, allk32) {
   return Math.min(32, Math.max(1, Math.ceil(n)));
 }
 
+function warmupFields(prefix, timed) {
+  return {
+    [`${prefix}_n${timed.n}_ms`]: timed.median_ms,
+    [`${prefix}_n${timed.n}_first5_ms`]: timed.first5_ms,
+    [`${prefix}_n${timed.n}_last5_ms`]: timed.last5_ms,
+    [`${prefix}_n${timed.n}_warmup_equal`]: timed.equal,
+    [`${prefix}_n${timed.n}_warmup_verdict`]: timed.verdict,
+  };
+}
+
 /**
  * @param {{
  *   q4kSetForce: (name: string) => void,
  *   q4kSetThreshold: (t: number) => void,
  *   q4kRunPerk: (n: number) => void,
+ *   q4kRunBprime: (n: number) => void,
  *   q4kThreshold: () => number,
+ *   now?: () => number,
  * }} api
  * @param {NodeJS.ProcessEnv} [env]
  */
 export function applyQ4kPolicy(api, env = process.env) {
   const raw = (env.MILTON_Q4K_VARIANT || "").toLowerCase();
-  if (raw === "perk" || raw === "per-k" || raw === "per_k") {
+  if (PERK_ALIASES.has(raw)) {
     api.q4kSetForce("perk");
     return {
       mode: "perk",
@@ -89,10 +110,21 @@ export function applyQ4kPolicy(api, env = process.env) {
       threshold: api.q4kThreshold(),
       cost_ms: 0,
       max_abs: null,
-      shipped_variants: ["perk"],
+      shipped_variants: ["perk", "bprime"],
     };
   }
-  if (raw === "allk" || raw === "all-k" || raw === "all_k") {
+  if (BPRIME_ALIASES.has(raw)) {
+    api.q4kSetForce("bprime");
+    return {
+      mode: "bprime",
+      forced: true,
+      threshold: api.q4kThreshold(),
+      cost_ms: 0,
+      max_abs: null,
+      shipped_variants: ["perk", "bprime"],
+    };
+  }
+  if (ALLK_ALIASES.has(raw)) {
     console.warn(
       `MILTON_Q4K_VARIANT=${raw} is not shipped; falling through to auto/per-k`,
     );
@@ -101,34 +133,43 @@ export function applyQ4kPolicy(api, env = process.env) {
   if (typeof api.q4kRunPerk !== "function") {
     throw new Error("fail-closed: Q4_K auto path requires q4kRunPerk — will not guess a threshold");
   }
+  if (typeof api.q4kRunBprime !== "function") {
+    throw new Error(
+      "fail-closed: Q4_K auto path requires q4kRunBprime — will not guess a threshold",
+    );
+  }
 
-  const t0 = performance.now();
-  // Time the shipped variant. Do not write threshold 33 until after the bench.
-  const perk32 = timeCalls(() => api.q4kRunPerk(32), 32);
-  const perk1 = timeCalls(() => api.q4kRunPerk(1), 1);
-  // Only perk ships — no second variant to cross. Threshold 33 after measuring.
-  const threshold = 33;
+  const now = nowFn(api);
+  const wall0 = performance.now();
+  const perk32 = timeCalls(() => api.q4kRunPerk(32), 32, now);
+  const perk1 = timeCalls(() => api.q4kRunPerk(1), 1, now);
+  const bprime32 = timeCalls(() => api.q4kRunBprime(32), 32, now);
+  const bprime1 = timeCalls(() => api.q4kRunBprime(1), 1, now);
+  const threshold = crossoverThreshold(
+    perk1.median_ms,
+    perk32.median_ms,
+    bprime1.median_ms,
+    bprime32.median_ms,
+  );
   api.q4kSetForce("auto");
   api.q4kSetThreshold(threshold);
   return {
     mode: "auto",
     forced: false,
     threshold: api.q4kThreshold(),
-    cost_ms: performance.now() - t0,
+    cost_ms: performance.now() - wall0,
     max_abs: null,
-    shipped_variants: ["perk"],
+    shipped_variants: ["perk", "bprime"],
     perk_n1_ms: perk1.median_ms,
     perk_n32_ms: perk32.median_ms,
     allk_n1_ms: null,
     allk_n32_ms: null,
-    perk_n32_first5_ms: perk32.first5_ms,
-    perk_n32_last5_ms: perk32.last5_ms,
-    perk_n32_warmup_equal: perk32.equal,
-    perk_n32_warmup_verdict: perk32.verdict,
-    perk_n1_first5_ms: perk1.first5_ms,
-    perk_n1_last5_ms: perk1.last5_ms,
-    perk_n1_warmup_equal: perk1.equal,
-    perk_n1_warmup_verdict: perk1.verdict,
+    bprime_n1_ms: bprime1.median_ms,
+    bprime_n32_ms: bprime32.median_ms,
+    ...warmupFields("perk", perk32),
+    ...warmupFields("perk", perk1),
+    ...warmupFields("bprime", bprime32),
+    ...warmupFields("bprime", bprime1),
   };
 }
 

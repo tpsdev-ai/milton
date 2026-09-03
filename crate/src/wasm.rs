@@ -70,9 +70,9 @@ impl Milton {
     }
 }
 
-/// Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `auto`).
-/// `allk` is not shipped — JS fail-closes before this is called.
-/// Does not live in the wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
+/// Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `bprime` | `auto`).
+/// `allk` is not shipped — JS warns and falls through. Does not live in the
+/// wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
 #[wasm_bindgen(js_name = q4kSetForce)]
 pub fn q4k_set_force(name: &str) {
     crate::qmatmul_simd128::q4k_set_force(name);
@@ -88,10 +88,16 @@ pub fn q4k_threshold() -> u32 {
     crate::qmatmul_simd128::q4k_threshold()
 }
 
-/// One synthetic superblock × `n_tokens` of the shipped per-k tile (framework).
+/// One synthetic superblock × `n_tokens` of the shipped per-k tile.
 #[wasm_bindgen(js_name = q4kRunPerk)]
 pub fn q4k_run_perk(n_tokens: u32) {
     crate::qmatmul_simd128::q4k_run_perk(n_tokens);
+}
+
+/// One synthetic superblock × `n_tokens` of the (b′) lane-wise tile.
+#[wasm_bindgen(js_name = q4kRunBprime)]
+pub fn q4k_run_bprime(n_tokens: u32) {
+    crate::qmatmul_simd128::q4k_run_bprime(n_tokens);
 }
 
 #[cfg(feature = "profile")]
