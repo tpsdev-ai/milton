@@ -43,6 +43,35 @@ function run(env) {
     env: { ...process.env, ...env },
   });
   assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+  return { ...JSON.parse(ran.stdout), stderr: ran.stderr || "" };
+}
+
+const CLAMP = join(tmpdir(), "milton-thread-clamp-child.mjs");
+writeFileSync(
+  CLAMP,
+  `import { resolveThreadCount, hostParallelism } from ${JSON.stringify(join(ROOT, "src", "wasm-threads.js"))};
+const warnings = [];
+console.warn = (msg) => { warnings.push(String(msg)); };
+const raw = process.env.CLAMP_THREADS;
+const env = raw === "__UNSET__" ? {} : { MILTON_THREADS: raw === "__EMPTY__" ? "" : raw };
+const first = resolveThreadCount(env);
+const second = resolveThreadCount(env);
+process.stdout.write(JSON.stringify({
+  first,
+  second,
+  warnings,
+  cores: hostParallelism(),
+}));
+`,
+);
+
+function clampRun(raw) {
+  const ran = spawnSync(process.execPath, [CLAMP], {
+    encoding: "utf8",
+    timeout: 10000,
+    env: { ...process.env, CLAMP_THREADS: raw },
+  });
+  assert.equal(ran.status, 0, ran.stderr || ran.stdout);
   return JSON.parse(ran.stdout);
 }
 
@@ -73,6 +102,11 @@ describe("lastThreadReport + MILTON_THREADS=1", () => {
 
   it("MILTON_THREADS=1 embed loads milton_bg.wasm and reports sabAvailable", () => {
     const got = run({ MILTON_THREADS: "1" });
+    assert.equal(
+      got.stderr.includes("MILTON_THREADS="),
+      false,
+      `in-range MILTON_THREADS=1 must not warn, got ${JSON.stringify(got.stderr)}`,
+    );
     assert.equal(got.artifact, "single");
     assert.equal(got.threads, 1);
     assert.deepEqual(Object.keys(got.report).sort(), [
@@ -98,5 +132,86 @@ describe("lastThreadReport + MILTON_THREADS=1", () => {
     assert.equal(got.report.workers, want);
     assert.equal(got.report.sabAvailable, true);
     assert.equal(got.report.availableParallelism, cores);
+    assert.equal(
+      got.stderr.includes("MILTON_THREADS="),
+      false,
+      `in-range MILTON_THREADS=${want} must not warn, got ${JSON.stringify(got.stderr)}`,
+    );
+  });
+});
+
+describe("MILTON_THREADS out-of-range clamp warn", () => {
+  it("env=abc (and 0 / negative / non-finite) clamps to 1 and warns once", () => {
+    for (const raw of ["abc", "0", "-3", "NaN", "Infinity", "-Infinity"]) {
+      const got = clampRun(raw);
+      assert.equal(got.first, 1, raw);
+      assert.equal(got.second, 1, raw);
+      assert.equal(got.warnings.length, 1, raw);
+      assert.ok(
+        got.warnings[0].includes(`MILTON_THREADS=${raw}`),
+        `expected warn naming MILTON_THREADS=${raw}, got ${JSON.stringify(got.warnings)}`,
+      );
+      assert.ok(
+        got.warnings[0].includes("using 1"),
+        `expected warn naming applied 1, got ${JSON.stringify(got.warnings)}`,
+      );
+    }
+  });
+
+  it("env=9999 clamps to hostParallelism() and warns once", () => {
+    const got = clampRun("9999");
+    assert.equal(got.first, got.cores);
+    assert.equal(got.second, got.cores);
+    assert.equal(got.warnings.length, 1);
+    assert.ok(
+      got.warnings[0].includes("MILTON_THREADS=9999"),
+      `expected warn naming MILTON_THREADS=9999, got ${JSON.stringify(got.warnings)}`,
+    );
+    assert.ok(
+      got.warnings[0].includes(`using ${got.cores}`),
+      `expected warn naming applied ${got.cores}, got ${JSON.stringify(got.warnings)}`,
+    );
+  });
+
+  it("unset / empty / in-range values do not warn", () => {
+    const cores = hostParallelism();
+    for (const raw of ["__UNSET__", "__EMPTY__", "1", String(Math.min(4, cores))]) {
+      const got = clampRun(raw);
+      assert.equal(got.warnings.length, 0, raw);
+      if (raw === "__UNSET__" || raw === "__EMPTY__") {
+        assert.equal(got.first, Math.min(4, cores));
+      }
+    }
+  });
+
+  it("env=abc embed reports workers 1 and warns naming the applied value", () => {
+    const got = run({ MILTON_THREADS: "abc" });
+    assert.equal(got.threads, 1);
+    assert.equal(got.report.workers, 1);
+    assert.ok(
+      got.stderr.includes("MILTON_THREADS=abc"),
+      `expected stderr to name MILTON_THREADS=abc, got ${JSON.stringify(got.stderr)}`,
+    );
+    assert.ok(
+      got.stderr.includes("using 1"),
+      `expected stderr to name applied 1, got ${JSON.stringify(got.stderr)}`,
+    );
+    assert.equal((got.stderr.match(/MILTON_THREADS=/g) || []).length, 1);
+  });
+
+  it("env=9999 embed reports workers = cores and warns naming the applied value", () => {
+    const cores = hostParallelism();
+    const got = run({ MILTON_THREADS: "9999" });
+    assert.equal(got.threads, cores);
+    assert.equal(got.report.workers, cores);
+    assert.ok(
+      got.stderr.includes("MILTON_THREADS=9999"),
+      `expected stderr to name MILTON_THREADS=9999, got ${JSON.stringify(got.stderr)}`,
+    );
+    assert.ok(
+      got.stderr.includes(`using ${cores}`),
+      `expected stderr to name applied ${cores}, got ${JSON.stringify(got.stderr)}`,
+    );
+    assert.equal((got.stderr.match(/MILTON_THREADS=/g) || []).length, 1);
   });
 });
