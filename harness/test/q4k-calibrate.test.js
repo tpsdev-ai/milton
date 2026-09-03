@@ -82,11 +82,25 @@ describe("Q4_K applyQ4kPolicy with all-k not shipped", () => {
     assert.equal(api.calls[32], 0);
   });
 
-  it("force allk fail-closes", () => {
+  it("env=allk loads (no throw), warns, and reports auto not all-k", () => {
     const api = mockApi();
-    assert.throws(
-      () => applyQ4kPolicy(api, { MILTON_Q4K_VARIANT: "allk" }),
-      /all-k is not shipped/,
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (msg) => {
+      warnings.push(String(msg));
+    };
+    let report;
+    try {
+      report = applyQ4kPolicy(api, { MILTON_Q4K_VARIANT: "allk" });
+    } finally {
+      console.warn = orig;
+    }
+    assert.notEqual(report.mode, "allk");
+    assert.ok(report.mode === "auto" || report.mode === "perk");
+    assert.equal(api.lastForce(), "auto");
+    assert.ok(
+      warnings.some((w) => w.includes("MILTON_Q4K_VARIANT=allk")),
+      `expected warn naming MILTON_Q4K_VARIANT=allk, got ${JSON.stringify(warnings)}`,
     );
   });
 });

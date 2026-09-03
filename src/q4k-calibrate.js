@@ -93,8 +93,8 @@ export function applyQ4kPolicy(api, env = process.env) {
     };
   }
   if (raw === "allk" || raw === "all-k" || raw === "all_k") {
-    throw new Error(
-      "fail-closed: Q4_K all-k is not shipped — optimized-tier pick is always per-k",
+    console.warn(
+      `MILTON_Q4K_VARIANT=${raw} is not shipped; falling through to auto/per-k`,
     );
   }
 
