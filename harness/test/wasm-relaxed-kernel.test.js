@@ -146,17 +146,17 @@ WebAssembly.validate = (buf) => {
 };
 process.env.MILTON_RELAXED_SIMD = "1";
 process.env.MILTON_THREADS = "1";
-const { embed, lastQmatmulKernel, lastThreadReport } = await import(${JSON.stringify(INDEX)});
+const m = await import(${JSON.stringify(INDEX)});
 let threw = null;
 try {
-  await embed("hello", { prefix: "document" });
+  await m.embed("hello", { prefix: "document" });
 } catch (err) {
   threw = err instanceof Error ? err.message : String(err);
 }
 process.stdout.write(JSON.stringify({
   threw,
-  kernel: lastQmatmulKernel,
-  thread: lastThreadReport,
+  kernel: m.lastQmatmulKernel,
+  thread: m.lastThreadReport,
 }));
 `,
     );
