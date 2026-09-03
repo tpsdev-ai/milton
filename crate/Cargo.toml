@@ -60,6 +60,10 @@ rope-libm-sin = []
 # Harness-only stage timers (issue #28). Default / shipped / wasm:build omit this
 # so the default wasm stays bit-identical. Do not enable on the embed path.
 profile = []
+# Threaded wasm artifact only (`scripts/build-wasm.sh` second pass).
+# Default / single-thread `wasm/milton_bg.wasm` must not enable this —
+# a shared-memory module cannot instantiate where SAB is absent.
+wasm-threads = []
 
 [dependencies]
 unicode-general-category = "1.0"

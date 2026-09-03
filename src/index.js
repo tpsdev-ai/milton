@@ -5,6 +5,11 @@
  * with +simd128. Prefix is config (`document` | `query` | `none`); templates
  * are `search_document: ` / `search_query: ` / passthrough (load-bearing space).
  *
+ * Two artifacts, one loader (Refs #44). The shared-memory module is used
+ * only when SharedArrayBuffer + Atomics exist and WebAssembly.validate
+ * accepts a shared-memory probe. Absence of SAB is the ordinary path —
+ * `wasm/milton_bg.wasm` — not an error.
+ *
  * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
  * refuses. No native compile and no per-platform build at install.
  * The reference toolchain stays in harness/ as the oracle.
@@ -13,23 +18,25 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import init, {
-  Milton,
-  q4kSetForce,
-  q4kSetThreshold,
-  q4kRunPerk,
-  q4kRunBprime,
-  q4kThreshold,
-} from "../wasm/milton.js";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
+import {
+  canUseWasmThreads,
+  resolveThreadCount,
+  startWorkerPool,
+} from "./wasm-threads.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WASM_PATH = join(ROOT, "wasm", "milton_bg.wasm");
+const WASM_THREADS_PATH = join(ROOT, "wasm", "milton_threads_bg.wasm");
 
 const PREFIX_KINDS = new Set(["document", "query", "none"]);
 
 export function resolveWasmPath() {
   return WASM_PATH;
+}
+
+export function resolveThreadsWasmPath() {
+  return WASM_THREADS_PATH;
 }
 
 export function resolveGguf(env = process.env) {
@@ -60,31 +67,65 @@ function resolveFault(prefix) {
 let wasmReady = null;
 let instance = null;
 let queue = Promise.resolve();
+let api = null;
 
 /** Last load-time Q4_K calibration (or forced-variant) report. */
 export let lastQ4kCalibration = null;
 
+/** `'single' | 'threads'` — which prebuilt artifact the loader picked. */
+export let lastWasmArtifact = null;
+
+/** Pool size after load. `1` on the single-thread artifact. */
+export let lastThreadCount = 1;
+
+export { canUseWasmThreads, resolveThreadCount };
+
 function ensureWasm() {
   if (wasmReady) return wasmReady;
-  if (!existsSync(WASM_PATH)) {
+  const useThreads = canUseWasmThreads();
+  const path = useThreads ? WASM_THREADS_PATH : WASM_PATH;
+  const label = useThreads ? "threads" : "single";
+  if (!existsSync(path)) {
     throw new Error(
-      "fail-closed: prebuilt wasm/milton_bg.wasm is missing — this package ships it; do not compile at install",
+      `fail-closed: prebuilt wasm/${label === "threads" ? "milton_threads_bg.wasm" : "milton_bg.wasm"} is missing — this package ships it; do not compile at install`,
     );
   }
-  const bytes = readFileSync(WASM_PATH);
-  wasmReady = init({ module_or_path: bytes }).then((w) => {
+  const bytes = readFileSync(path);
+  wasmReady = (async () => {
+    if (useThreads) {
+      const m = await import("../wasm/milton_threads.js");
+      const module = new WebAssembly.Module(bytes);
+      await m.default({ module_or_path: module });
+      const memory = m.wasmMemory();
+      const n = resolveThreadCount();
+      const { workerCount } = await startWorkerPool({
+        module,
+        memory,
+        workerCount: n,
+        miltonSetWorkers: m.miltonSetWorkers,
+      });
+      lastWasmArtifact = "threads";
+      lastThreadCount = workerCount;
+      api = m;
+    } else {
+      const m = await import("../wasm/milton.js");
+      await m.default({ module_or_path: bytes });
+      lastWasmArtifact = "single";
+      lastThreadCount = 1;
+      api = m;
+    }
     lastQ4kCalibration = applyQ4kPolicy(
       {
-        q4kSetForce,
-        q4kSetThreshold,
-        q4kRunPerk,
-        q4kRunBprime,
-        q4kThreshold,
+        q4kSetForce: api.q4kSetForce,
+        q4kSetThreshold: api.q4kSetThreshold,
+        q4kRunPerk: api.q4kRunPerk,
+        q4kRunBprime: api.q4kRunBprime,
+        q4kThreshold: api.q4kThreshold,
       },
       process.env,
     );
-    return w;
-  });
+    return api;
+  })();
   return wasmReady;
 }
 
@@ -101,7 +142,7 @@ export async function load(ggufPath) {
     );
   }
   const bytes = readFileSync(path);
-  instance = new Milton(bytes);
+  instance = new api.Milton(bytes);
   return instance;
 }
 

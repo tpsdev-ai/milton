@@ -8,10 +8,66 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
 const WASM_DIR = join(ROOT, "wasm");
 const WASM = join(WASM_DIR, "milton_bg.wasm");
+const WASM_T = join(WASM_DIR, "milton_threads_bg.wasm");
 const GLUE = join(WASM_DIR, "milton.js");
+const GLUE_T = join(WASM_DIR, "milton_threads.js");
 const SRC = join(ROOT, "src", "index.js");
 const CONFIG = join(ROOT, "crate", ".cargo", "config.toml");
 const BUILD = join(ROOT, "scripts", "build-wasm.sh");
+
+function wasmImportsSharedMemory(bytes) {
+  if (bytes.subarray(0, 4).toString() !== "\0asm") return false;
+  let i = 8;
+  const uvarint = () => {
+    let x = 0;
+    let s = 0;
+    while (i < bytes.length) {
+      const c = bytes[i];
+      i += 1;
+      x |= (c & 0x7f) << s;
+      if (c < 0x80) return x;
+      s += 7;
+    }
+    return 0;
+  };
+  while (i < bytes.length) {
+    const sid = uvarint();
+    const slen = uvarint();
+    const start = i;
+    const end = i + slen;
+    if (sid === 2) {
+      let j = start;
+      const uv = () => {
+        let x = 0;
+        let s = 0;
+        while (j < end) {
+          const c = bytes[j];
+          j += 1;
+          x |= (c & 0x7f) << s;
+          if (c < 0x80) return x;
+          s += 7;
+        }
+        return 0;
+      };
+      const n = uv();
+      for (let k = 0; k < n; k += 1) {
+        const ml = uv();
+        j += ml;
+        const nl = uv();
+        j += nl;
+        const kind = bytes[j];
+        j += 1;
+        if (kind === 2) {
+          const flags = bytes[j];
+          return (flags & 2) !== 0;
+        }
+        break;
+      }
+    }
+    i = end;
+  }
+  return false;
+}
 
 describe("WASM-SIMD packaging", () => {
   it("ships a prebuilt .wasm (no compile at consumer install)", () => {
@@ -20,6 +76,16 @@ describe("WASM-SIMD packaging", () => {
     const bytes = readFileSync(WASM);
     assert.ok(bytes.length > 1024, `wasm too small: ${bytes.length}`);
     assert.equal(bytes.subarray(0, 4).toString(), "\0asm");
+  });
+
+  it("ships a second prebuilt shared-memory .wasm for Node threads", () => {
+    assert.ok(existsSync(WASM_T), `missing ${WASM_T} — builder must run npm run wasm:build`);
+    assert.ok(existsSync(GLUE_T), `missing ${GLUE_T}`);
+    const bytes = readFileSync(WASM_T);
+    assert.ok(bytes.length > 1024, `threads wasm too small: ${bytes.length}`);
+    assert.equal(bytes.subarray(0, 4).toString(), "\0asm");
+    assert.equal(wasmImportsSharedMemory(readFileSync(WASM)), false);
+    assert.equal(wasmImportsSharedMemory(bytes), true);
   });
 
   it("was compiled with WASM SIMD (0xfd opcodes present)", () => {
@@ -34,6 +100,7 @@ describe("WASM-SIMD packaging", () => {
     assert.match(cfg, /target-feature=\+simd128/);
     const build = readFileSync(BUILD, "utf8");
     assert.match(build, /target-feature=\+simd128/);
+    assert.match(build, /atomics,\+bulk-memory/);
     assert.match(build, /Consumers do NOT run this/);
   });
 
@@ -57,6 +124,7 @@ describe("WASM-SIMD packaging", () => {
   it("public glue loads the prebuilt wasm, not a native bin", () => {
     const src = readFileSync(SRC, "utf8");
     assert.match(src, /milton_bg\.wasm/);
+    assert.match(src, /milton_threads_bg\.wasm/);
     assert.match(src, /embed\(text, prefix\)/);
     assert.doesNotMatch(src, /milton-embed/);
     assert.doesNotMatch(src, /node-gyp/);

@@ -472,9 +472,47 @@ pub fn gemm_q4_k_8x8_q8_k(
             _ => (tn as u32) >= threshold,
         };
         if use_bprime {
-            q4k_tile_bprime(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+            q4k_tile_bprime(repack, qrows, t0, tn, n_blocks, 0, n_groups, n_out, m4, out);
         } else {
-            q4k_tile_perk(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+            q4k_tile_perk(repack, qrows, t0, tn, n_blocks, 0, n_groups, n_out, m4, out);
+        }
+    }
+}
+
+/// Same integer tree as [`gemm_q4_k_8x8_q8_k`], restricted to `[col_start, col_end)`.
+/// `col_start`/`col_end` are 8-aligned (Q4_K 8×8 groups). Worker path.
+#[cfg(feature = "wasm-threads")]
+pub fn gemm_q4_k_8x8_q8_k_cols(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    n_tokens: usize,
+    n_out: usize,
+    out: &mut [f32],
+    col_start: usize,
+    col_end: usize,
+) {
+    debug_assert!(n_tokens > 0);
+    debug_assert_eq!(col_start % 8, 0);
+    debug_assert_eq!(col_end % 8, 0);
+    debug_assert!(col_start <= col_end && col_end <= n_out);
+    let n_blocks = qrows.len() / n_tokens;
+    let g0 = col_start / 8;
+    let g1 = col_end / 8;
+    let m4 = i16x8_splat(0x0F);
+    let force = Q4K_FORCE.load(Ordering::Relaxed);
+    let threshold = Q4K_THRESHOLD.load(Ordering::Relaxed);
+
+    for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
+        let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
+        let use_bprime = match force {
+            Q4K_FORCE_BPRIME => true,
+            Q4K_FORCE_PERK => false,
+            _ => (tn as u32) >= threshold,
+        };
+        if use_bprime {
+            q4k_tile_bprime(repack, qrows, t0, tn, n_blocks, g0, g1, n_out, m4, out);
+        } else {
+            q4k_tile_perk(repack, qrows, t0, tn, n_blocks, g0, g1, n_out, m4, out);
         }
     }
 }
@@ -488,12 +526,13 @@ fn q4k_tile_perk(
     t0: usize,
     tn: usize,
     n_blocks: usize,
-    n_groups: usize,
+    g0: usize,
+    g1: usize,
     n_out: usize,
     m4: v128,
     out: &mut [f32],
 ) {
-    for x in 0..n_groups {
+    for x in g0..g1 {
         let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
         let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
         for l in 0..n_blocks {
@@ -556,13 +595,14 @@ fn q4k_tile_bprime(
     t0: usize,
     tn: usize,
     n_blocks: usize,
-    n_groups: usize,
+    g0: usize,
+    g1: usize,
     n_out: usize,
     m4: v128,
     out: &mut [f32],
 ) {
     let ones = i16x8_splat(1);
-    for x in 0..n_groups {
+    for x in g0..g1 {
         let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
         let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
         for l in 0..n_blocks {
@@ -888,7 +928,7 @@ pub(crate) fn q4k_run_perk(n_tokens: u32) {
     let qrows = synth_q8(n);
     let m4 = i16x8_splat(0x0F);
     let mut out = [0.0f32; GEMM_TILE_TOKENS * 8];
-    q4k_tile_perk(&repack, &qrows, 0, n, 1, 1, 8, m4, &mut out);
+    q4k_tile_perk(&repack, &qrows, 0, n, 1, 0, 1, 8, m4, &mut out);
     std::hint::black_box(out[0]);
 }
 
@@ -899,6 +939,6 @@ pub(crate) fn q4k_run_bprime(n_tokens: u32) {
     let qrows = synth_q8(n);
     let m4 = i16x8_splat(0x0F);
     let mut out = [0.0f32; GEMM_TILE_TOKENS * 8];
-    q4k_tile_bprime(&repack, &qrows, 0, n, 1, 1, 8, m4, &mut out);
+    q4k_tile_bprime(&repack, &qrows, 0, n, 1, 0, 1, 8, m4, &mut out);
     std::hint::black_box(out[0]);
 }

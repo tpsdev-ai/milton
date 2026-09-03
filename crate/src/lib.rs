@@ -1,6 +1,14 @@
 //! Milton crate — tokenizer + GGUF dequant + forward for nomic-embed-text-v1.5.
 //! Same lib is compiled native (bins) and WASM-SIMD (`wasm/`). Not two forwards.
 //!
+//! `wasm-threads` is the second artifact only (`wasm/milton_threads_bg.wasm`).
+//! `memory_atomic_wait32` is the stable-bootstrap intrinsic for that build.
+
+#![cfg_attr(
+    all(target_arch = "wasm32", feature = "wasm-threads"),
+    feature(stdarch_wasm_atomic_wait)
+)]
+//!
 //! Tokenizer core (`tokenize`, `apply_prefix`) is pure. Vocab is embedded
 //! from the pinned `vocab.txt`. Forward is GGUF-driven (layer count, dims,
 //! pooling, RoPE, LN eps). Prefixes are config. Dequant + forward correctness
@@ -22,6 +30,8 @@ mod model;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+mod wasm_pool;
 
 #[cfg(test)]
 mod conformance;
