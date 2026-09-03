@@ -11,7 +11,7 @@ import { loadCorpus } from "../lib/corpus.js";
 import { loadEpsilon } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
 import { createNativeEmbedder } from "../lib/milton-native.js";
-import { embed as wasmEmbed } from "../../src/index.js";
+import { embed as wasmEmbed, lastThreadCount, lastWasmArtifact } from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "../..");
@@ -69,9 +69,19 @@ for (const c of corpus.cases) {
   if (!cmp.pass) failed += 1;
 }
 
+let result = failed === 0 ? "pass" : "fail";
+const tight =
+  process.env.MILTON_ROPE_LIBM_SIN !== "1" && process.env.MILTON_COMPARE_TIGHT !== "0";
+let tightBlock = null;
+if (tight && maxAbs !== 0) {
+  result = "fail";
+  tightBlock = { expected: 0, got: maxAbs };
+  process.stderr.write(`BLOCK: tight max_abs expected 0 got ${maxAbs}\n`);
+}
+
 const receipt = {
   schema: "milton.native-vs-wasm/1",
-  result: failed === 0 ? "pass" : "fail",
+  result,
   n: rows.length,
   failed,
   max_cos_dist: maxCos,
@@ -79,9 +89,13 @@ const receipt = {
   max_abs: maxAbs,
   epsilon: eps.epsilon,
   epsilon_abs: eps.epsilon_abs,
+  wasm_artifact: lastWasmArtifact,
+  wasm_threads: lastThreadCount,
+  tight_max_abs: tight ? { expected: 0, got: maxAbs, pass: maxAbs === 0 } : null,
   note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten.",
   cases: rows,
 };
+if (tightBlock) receipt.block = { tight_max_abs: tightBlock };
 
 mkdirSync(join(ROOT, "harness", "receipts"), { recursive: true });
 writeFileSync(

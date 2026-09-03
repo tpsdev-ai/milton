@@ -64,8 +64,8 @@ export async function startWorkerPool({
   miltonSetWorkers,
 }) {
   const w = Math.max(1, workerCount | 0);
-  miltonSetWorkers(w);
   if (w <= 1) {
+    miltonSetWorkers(1);
     return { workers: [], workerCount: 1 };
   }
   const workers = [];
@@ -91,5 +91,9 @@ export async function startWorkerPool({
     workers.push(worker);
   }
   await Promise.all(ready);
+  // After worker instantiate: rustc +atomics uses passive segments, but
+  // set W only once every instance has started so a start-time data
+  // apply cannot reset WORKERS to 1 (silent serial fallback).
+  miltonSetWorkers(w);
   return { workers, workerCount: w };
 }

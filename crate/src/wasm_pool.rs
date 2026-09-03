@@ -228,6 +228,19 @@ fn dispatch(jobs: &[SiteJob]) -> bool {
     CONTROL.workers_done.store(0, Ordering::Relaxed);
     let _ = CONTROL.epoch.fetch_add(1, Ordering::Release);
     notify_i32(&CONTROL.epoch, u32::MAX);
+    // Coordinator is worker 0. JS spawned ids 1..W-1. If this thread
+    // only waits, W-1 increments never reach n_workers — hang — and
+    // worker 0's columns stay unwritten (bit-exact miss).
+    {
+        let sites = unsafe { &*CONTROL.sites.get() };
+        for i in 0..jobs.len().min(MAX_SITES) {
+            run_site(&sites[i], 0, n_workers as usize);
+        }
+    }
+    let prev = CONTROL.workers_done.fetch_add(1, Ordering::Release);
+    if prev + 1 >= n_workers {
+        notify_i32(&CONTROL.workers_done, 1);
+    }
     loop {
         let d = CONTROL.workers_done.load(Ordering::Acquire);
         if d >= n_workers {
