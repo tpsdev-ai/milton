@@ -11,6 +11,7 @@ import {
   resolveQmatmulKernel,
   SIMD128_ADD_PROBE,
 } from "../../src/relaxed-simd.js";
+import { hostParallelism } from "../../src/wasm-threads.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const INDEX = join(ROOT, "src", "index.js");
@@ -18,9 +19,9 @@ const INDEX = join(ROOT, "src", "index.js");
 const CHILD = join(tmpdir(), "milton-relaxed-kernel-child.mjs");
 writeFileSync(
   CHILD,
-  `import { embed, lastQmatmulKernel } from ${JSON.stringify(INDEX)};
+  `import { embed, lastQmatmulKernel, lastThreadReport } from ${JSON.stringify(INDEX)};
 await embed("hello", { prefix: "document" });
-process.stdout.write(JSON.stringify(lastQmatmulKernel));
+process.stdout.write(JSON.stringify({ kernel: lastQmatmulKernel, thread: lastThreadReport }));
 process.exit(0);
 `,
 );
@@ -38,7 +39,18 @@ function run(env) {
   const ran = spawnSync(process.execPath, [CHILD], {
     encoding: "utf8",
     timeout: 60000,
-    env: { ...process.env, MILTON_THREADS: "1", ...env },
+    env: { ...process.env, ...env },
+  });
+  assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+  const parsed = JSON.parse(ran.stdout);
+  return parsed.kernel ?? parsed;
+}
+
+function runFull(env) {
+  const ran = spawnSync(process.execPath, [CHILD], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, ...env },
   });
   assert.equal(ran.status, 0, ran.stderr || ran.stdout);
   return JSON.parse(ran.stdout);
@@ -75,22 +87,32 @@ describe("lastQmatmulKernel", () => {
   });
 
   it("MILTON_THREADS=1 auto-select reports relaxed on Node ≥22", () => {
-    const got = run({});
+    const got = run({ MILTON_THREADS: "1" });
     assert.deepEqual(Object.keys(got).sort(), ["forced", "kernel", "probe"]);
     assert.equal(got.kernel, "relaxed");
     assert.equal(got.probe, true);
     assert.equal(got.forced, false);
   });
 
+  it("auto threads reports relaxed kernel and threads artifact together", () => {
+    const cores = Math.min(4, hostParallelism());
+    if (cores <= 1) return;
+    const got = runFull({ MILTON_THREADS: String(cores) });
+    assert.equal(got.kernel.kernel, "relaxed");
+    assert.equal(got.kernel.probe, true);
+    assert.equal(got.thread.artifact, "threads");
+    assert.equal(got.thread.workers, cores);
+  });
+
   it("MILTON_RELAXED_SIMD=0 reports simd128 with probe still true", () => {
-    const got = run({ MILTON_RELAXED_SIMD: "0" });
+    const got = run({ MILTON_THREADS: "1", MILTON_RELAXED_SIMD: "0" });
     assert.equal(got.kernel, "simd128");
     assert.equal(got.probe, true);
     assert.equal(got.forced, true);
   });
 
   it("MILTON_RELAXED_SIMD=1 reports relaxed forced", () => {
-    const got = run({ MILTON_RELAXED_SIMD: "1" });
+    const got = run({ MILTON_THREADS: "1", MILTON_RELAXED_SIMD: "1" });
     assert.equal(got.kernel, "relaxed");
     assert.equal(got.probe, true);
     assert.equal(got.forced, true);

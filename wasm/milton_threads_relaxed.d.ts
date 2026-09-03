@@ -1,0 +1,97 @@
+/* tslint:disable */
+/* eslint-disable */
+/**
+ * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `bprime` | `auto`).
+ * `allk` is not shipped — JS warns and falls through. Does not live in the
+ * wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
+ */
+export function q4kSetForce(name: string): void;
+export function q4kSetThreshold(t: number): void;
+export function q4kThreshold(): number;
+/**
+ * One synthetic superblock × `n_tokens` of the shipped per-k tile.
+ */
+export function q4kRunPerk(n_tokens: number): void;
+/**
+ * One synthetic superblock × `n_tokens` of the (b′) lane-wise tile.
+ */
+export function q4kRunBprime(n_tokens: number): void;
+export function wasmMemory(): any;
+/**
+ * Threaded artifact only. JS starts `W` `worker_threads` then calls this.
+ * `W=1` keeps the serial `matmul_ggml` path inside the shared-memory module.
+ */
+export function miltonSetWorkers(n: number): void;
+export function miltonWorkerCount(): number;
+/**
+ * Worker entry: never returns. Parks on the shared epoch.
+ */
+export function miltonWorkerEnter(id: number): void;
+/**
+ * In-process embedder loaded from GGUF bytes.
+ */
+export class Milton {
+  free(): void;
+  /**
+   * `gguf` is the raw nomic-embed-text-v1.5 GGUF (architecture from the file).
+   */
+  constructor(gguf: Uint8Array);
+  /**
+   * `embed(text, prefix) -> Float32Array`. Prefix kind is `document` |
+   * `query` | `none`. Templates (`search_document: ` / `search_query: `)
+   * are config on the Rust side — space after the colon is load-bearing.
+   */
+  embed(text: string, prefix: string): Float32Array;
+  embedWithFault(text: string, prefix: string, fault: string): Float32Array;
+  embeddingLength(): number;
+}
+
+export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+
+export interface InitOutput {
+  readonly __wbg_milton_free: (a: number, b: number) => void;
+  readonly milton_new: (a: number, b: number) => [number, number, number];
+  readonly milton_embed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+  readonly milton_embedWithFault: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+  readonly milton_embeddingLength: (a: number) => number;
+  readonly q4kSetForce: (a: number, b: number) => void;
+  readonly q4kSetThreshold: (a: number) => void;
+  readonly q4kThreshold: () => number;
+  readonly q4kRunPerk: (a: number) => void;
+  readonly q4kRunBprime: (a: number) => void;
+  readonly wasmMemory: () => any;
+  readonly miltonSetWorkers: (a: number) => void;
+  readonly miltonWorkerCount: () => number;
+  readonly miltonWorkerEnter: (a: number) => void;
+  readonly memory: WebAssembly.Memory;
+  readonly __wbindgen_export_1: WebAssembly.Table;
+  readonly __wbindgen_malloc: (a: number, b: number) => number;
+  readonly __externref_table_dealloc: (a: number) => void;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_thread_destroy: (a?: number, b?: number, c?: number) => void;
+  readonly __wbindgen_start: (a: number) => void;
+}
+
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+/**
+* Instantiates the given `module`, which can either be bytes or
+* a precompiled `WebAssembly.Module`.
+*
+* @param {{ module: SyncInitInput, memory?: WebAssembly.Memory, thread_stack_size?: number }} module - Passing `SyncInitInput` directly is deprecated.
+* @param {WebAssembly.Memory} memory - Deprecated.
+*
+* @returns {InitOutput}
+*/
+export function initSync(module: { module: SyncInitInput, memory?: WebAssembly.Memory, thread_stack_size?: number } | SyncInitInput, memory?: WebAssembly.Memory): InitOutput;
+
+/**
+* If `module_or_path` is {RequestInfo} or {URL}, makes a request and
+* for everything else, calls `WebAssembly.instantiate` directly.
+*
+* @param {{ module_or_path: InitInput | Promise<InitInput>, memory?: WebAssembly.Memory, thread_stack_size?: number }} module_or_path - Passing `InitInput` directly is deprecated.
+* @param {WebAssembly.Memory} memory - Deprecated.
+*
+* @returns {Promise<InitOutput>}
+*/
+export default function __wbg_init (module_or_path: { module_or_path: InitInput | Promise<InitInput>, memory?: WebAssembly.Memory, thread_stack_size?: number } | InitInput | Promise<InitInput>, memory?: WebAssembly.Memory): Promise<InitOutput>;

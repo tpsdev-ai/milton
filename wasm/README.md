@@ -7,10 +7,12 @@ Consumers do not need Rust, `wasm-pack`, or a compile step.
 |---|---|
 | `milton_bg.wasm` | same `crate/` lib compiled `wasm32-unknown-unknown` + `simd128` (bun / probe-fail / `MILTON_RELAXED_SIMD=0`) |
 | `milton.js` | wasm-bindgen `--target web` glue for the simd128 artifact |
-| `milton_relaxed_bg.wasm` | same crate + feature `relaxed-simd` (Q4_K / Q5_K i8×i7 dot). Loaded only after the relaxed-dot probe passes. |
-| `milton_relaxed.js` | wasm-bindgen glue for the relaxed artifact |
-| `milton_threads_bg.wasm` | same crate + `wasm-threads`, `+atomics,+bulk-memory`, **shared** memory import (simd128; #43 does not touch this path) |
-| `milton_threads.js` | wasm-bindgen glue for the threaded artifact |
+| `milton_relaxed_bg.wasm` | same crate + feature `relaxed-simd` (Q4_K / Q5_K i8×i7 dot). Loaded when the relaxed-dot probe passes and threads are off (`MILTON_THREADS=1` or pool ≤1). |
+| `milton_relaxed.js` | wasm-bindgen glue for the relaxed single-thread artifact |
+| `milton_threads_bg.wasm` | same crate + `wasm-threads`, `+atomics,+bulk-memory`, **shared** memory import (simd128 fallback when probe fails or `MILTON_RELAXED_SIMD=0`) |
+| `milton_threads.js` | wasm-bindgen glue for the threaded simd128 artifact |
+| `milton_threads_relaxed_bg.wasm` | threads + `relaxed-simd` — loaded when **both** SAB/Atomics and the relaxed-dot probe pass |
+| `milton_threads_relaxed.js` | wasm-bindgen glue for the threaded relaxed artifact |
 
 The JS loader (`src/index.js`) picks the threaded module only when
 `SharedArrayBuffer` + `Atomics` exist, `WebAssembly.validate` accepts a
@@ -36,7 +38,8 @@ every bun consumer — including flair's own test suites — takes
 case.
 
 `lastQmatmulKernel` records `{kernel: 'relaxed' | 'simd128', probe, forced}`
-after load (`probe` is the capability, not the pick).
+after load (`probe` is the capability, not the pick). On the threaded
+path, `lastThreadReport.artifact` is `'threads'` at the same time.
 `MILTON_RELAXED_SIMD=0` forces simd128 even when the probe passes.
 `MILTON_RELAXED_SIMD=1` fail-closes if the probe rejects.
 

@@ -13,9 +13,11 @@
  *
  * Single-thread pick (Refs #43): `WebAssembly.validate` of a relaxed-dot
  * probe loads `wasm/milton_relaxed_bg.wasm`; otherwise `milton_bg.wasm`.
- * `MILTON_RELAXED_SIMD=0` forces simd128; `=1` fail-closes if the probe
- * rejects. Never a Node version sniff — bun validates SIMD128 and rejects
- * the relaxed probe.
+ * Threaded pick: when SAB + pool > 1, load `milton_threads_relaxed_bg.wasm`
+ * when the relaxed probe passes, else `milton_threads_bg.wasm`.
+ * `MILTON_RELAXED_SIMD=0` forces simd128 on both paths; `=1` fail-closes
+ * if the probe rejects. Never a Node version sniff — bun validates SIMD128
+ * and rejects the relaxed probe.
  *
  * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
  * refuses. No native compile and no per-platform build at install.
@@ -41,6 +43,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WASM_PATH = join(ROOT, "wasm", "milton_bg.wasm");
 const WASM_RELAXED_PATH = join(ROOT, "wasm", "milton_relaxed_bg.wasm");
 const WASM_THREADS_PATH = join(ROOT, "wasm", "milton_threads_bg.wasm");
+const WASM_THREADS_RELAXED_PATH = join(ROOT, "wasm", "milton_threads_relaxed_bg.wasm");
+const GLUE_THREADS = "../wasm/milton_threads.js";
+const GLUE_THREADS_RELAXED = "../wasm/milton_threads_relaxed.js";
 
 const PREFIX_KINDS = new Set(["document", "query", "none"]);
 
@@ -48,8 +53,8 @@ export function resolveWasmPath() {
   return WASM_PATH;
 }
 
-export function resolveThreadsWasmPath() {
-  return WASM_THREADS_PATH;
+export function resolveThreadsWasmPath(relaxed = false) {
+  return relaxed ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
 }
 
 export function resolveRelaxedWasmPath() {
@@ -108,7 +113,7 @@ export let lastThreadCount = 1;
 /**
  * Q4_K/Q5_K integer-tree pick (issue #43). Same grain as `lastThreadReport`.
  * `probe` is the capability (`WebAssembly.validate` of relaxed-dot), not the pick.
- * Threads artifact is simd128 (#44/#50/#51 — this chip does not touch it).
+ * Applies on both single-thread and threaded artifacts.
  * @type {{ kernel: 'relaxed' | 'simd128', probe: boolean, forced: boolean } | null}
  */
 export let lastQmatmulKernel = null;
@@ -130,13 +135,23 @@ function ensureWasm() {
   if (wasmReady) return wasmReady;
   const useThreads = canUseWasmThreads();
   const qk = resolveQmatmulKernel(process.env);
-  const useRelaxed = !useThreads && qk.kernel === "relaxed";
-  const path = useThreads ? WASM_THREADS_PATH : useRelaxed ? WASM_RELAXED_PATH : WASM_PATH;
-  const missingName = useThreads
-    ? "milton_threads_bg.wasm"
-    : useRelaxed
-      ? "milton_relaxed_bg.wasm"
-      : "milton_bg.wasm";
+  const useRelaxedKernel = qk.kernel === "relaxed";
+  let path;
+  let missingName;
+  let glueModule;
+  if (useThreads) {
+    const useThreadsRelaxed = useRelaxedKernel;
+    path = useThreadsRelaxed ? WASM_THREADS_RELAXED_PATH : WASM_THREADS_PATH;
+    missingName = useThreadsRelaxed
+      ? "milton_threads_relaxed_bg.wasm"
+      : "milton_threads_bg.wasm";
+    glueModule = useThreadsRelaxed ? GLUE_THREADS_RELAXED : GLUE_THREADS;
+  } else {
+    const useRelaxed = useRelaxedKernel;
+    path = useRelaxed ? WASM_RELAXED_PATH : WASM_PATH;
+    missingName = useRelaxed ? "milton_relaxed_bg.wasm" : "milton_bg.wasm";
+    glueModule = useRelaxed ? "../wasm/milton_relaxed.js" : "../wasm/milton.js";
+  }
   if (!existsSync(path)) {
     throw new Error(
       `fail-closed: prebuilt wasm/${missingName} is missing — this package ships it; do not compile at install`,
@@ -145,7 +160,7 @@ function ensureWasm() {
   const bytes = readFileSync(path);
   wasmReady = (async () => {
     if (useThreads) {
-      const m = await import("../wasm/milton_threads.js");
+      const m = await import(glueModule);
       const module = new WebAssembly.Module(bytes);
       await m.default({ module_or_path: module });
       const memory = m.wasmMemory();
@@ -155,14 +170,13 @@ function ensureWasm() {
         memory,
         workerCount: n,
         miltonSetWorkers: m.miltonSetWorkers,
+        workerGlue: glueModule,
       });
       publishThreadReport("threads", workerPool.workerCount);
-      lastQmatmulKernel = { kernel: "simd128", probe: qk.probe, forced: false };
+      lastQmatmulKernel = qk;
       api = m;
     } else {
-      const m = useRelaxed
-        ? await import("../wasm/milton_relaxed.js")
-        : await import("../wasm/milton.js");
+      const m = await import(glueModule);
       await m.default({ module_or_path: bytes });
       publishThreadReport("single", 1);
       lastQmatmulKernel = qk;

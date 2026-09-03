@@ -65,8 +65,9 @@ profile = []
 # a shared-memory module cannot instantiate where SAB is absent.
 wasm-threads = []
 # Relaxed-SIMD Q4_K / Q5_K integer trees. Second single-thread artifact
-# only (`wasm/milton_relaxed_bg.wasm`). Default / simd128 / threads
-# builds omit this so bun can still instantiate `milton_bg.wasm`.
+# (`wasm/milton_relaxed_bg.wasm`) and fourth threaded artifact
+# (`wasm/milton_threads_relaxed_bg.wasm`). Default / simd128-only builds
+# omit this so bun can still instantiate `milton_bg.wasm`.
 # Do not enable as a global `+relaxed-simd` RUSTFLAG — LLVM must not
 # rewrite the f32 scale stage.
 relaxed-simd = []

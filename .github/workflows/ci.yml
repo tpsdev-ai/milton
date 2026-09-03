@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/committed-wasm"
-          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js; do
+          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js milton_threads_relaxed_bg.wasm milton_threads_relaxed.js; do
             cp "wasm/$f" "$RUNNER_TEMP/committed-wasm/$f"
           done
           sha256sum "$RUNNER_TEMP/committed-wasm/"*
@@ -85,6 +85,7 @@ jobs:
             wasm/milton_bg.wasm
             wasm/milton_relaxed_bg.wasm
             wasm/milton_threads_bg.wasm
+            wasm/milton_threads_relaxed_bg.wasm
           if-no-files-found: error
           retention-days: 14
       - name: Section-table diff (wasm-objdump)
@@ -102,12 +103,15 @@ jobs:
           bash scripts/ci/wasm-section-diff.sh \
             "$RUNNER_TEMP/committed-wasm/milton_threads_bg.wasm" \
             wasm/milton_threads_bg.wasm
+          bash scripts/ci/wasm-section-diff.sh \
+            "$RUNNER_TEMP/committed-wasm/milton_threads_relaxed_bg.wasm" \
+            wasm/milton_threads_relaxed_bg.wasm
       - name: Byte-compare rebuilt wasm vs committed
         id: wasm-bytes
         run: |
           set -euo pipefail
           match=true
-          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js; do
+          for f in milton_bg.wasm milton.js milton_relaxed_bg.wasm milton_relaxed.js milton_threads_bg.wasm milton_threads.js milton_threads_relaxed_bg.wasm milton_threads_relaxed.js; do
             echo "committed $(sha256sum "$RUNNER_TEMP/committed-wasm/$f")"
             echo "rebuilt   $(sha256sum "wasm/$f")"
             if ! cmp -s "$RUNNER_TEMP/committed-wasm/$f" "wasm/$f"; then
@@ -175,8 +179,12 @@ jobs:
         run: npm run wasm:compare:q4k-bprime
       - name: wasm:compare must-fire (rope-libm-sin)
         run: npm run wasm:compare:libm-sin-must-fire
-      - name: wasm:compare:threads (tight max_abs=0)
+      - name: wasm:compare:threads (auto → threads-relaxed on Node ≥22)
         run: npm run wasm:compare:threads
+      - name: wasm:compare threads simd128 fallback (MILTON_RELAXED_SIMD=0)
+        run: npm run wasm:compare:threads:simd128
+      - name: wasm:compare threads forced-relaxed
+        run: npm run wasm:compare:threads:relaxed
 
   wasm-compare-node26:
     runs-on: ubuntu-latest
@@ -193,3 +201,7 @@ jobs:
         run: npm run wasm:compare
       - name: wasm:compare simd128 fallback on Node 26
         run: npm run wasm:compare:simd128
+      - name: wasm:compare threads-relaxed on Node 26
+        run: npm run wasm:compare:threads
+      - name: wasm:compare threads simd128 fallback on Node 26
+        run: npm run wasm:compare:threads:simd128
