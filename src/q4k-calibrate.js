@@ -2,13 +2,14 @@
  * Load-time Q4_K calibration framework.
  *
  * WARMUP=100 (Kern #47): V8 Liftoff → TurboFan is invocation-driven.
- * Kept so a later second variant ((b′) lane-wise scale) measures the
- * optimized tier. All-k (`Q4kUnpacked`) is not shipped — after the
- * tier fix, `--no-liftoff` on this VM and M4 both stay at threshold 33
- * (always per-k). Auto path therefore records threshold 33 and does
- * not time a missing kernel. Crossover math is unchanged for (b′).
+ * The auto path **times** the shipped variant(s) — it does not short-circuit
+ * to threshold 33 without measuring. All-k (`Q4kUnpacked`) is not in the
+ * wasm, so the only timed kernel is per-k; threshold stays 33 after the
+ * measurement. Crossover math is unchanged for a later letter ((b′)).
  *
- * Calibration cannot change results — only time. No engine / CPU sniffing.
+ * The report carries median(first 5 warmup calls) vs median(last 5) so
+ * a Liftoff → TurboFan step is visible. Calibration cannot change
+ * results — only time. No engine / CPU sniffing.
  */
 
 const WARMUP = 100;
@@ -20,15 +21,40 @@ function median(xs) {
   return a.length % 2 ? a[mid] : 0.5 * (a[mid - 1] + a[mid]);
 }
 
+/**
+ * Time `fn` with WARMUP timed calls (not discarded) then SAMPLES.
+ * first5 / last5 are medians of the warmup window — equal means no
+ * observable tier-up during those 100 invocations.
+ */
 function timeCalls(fn, n) {
+  const warmup = [];
+  for (let i = 0; i < WARMUP; i += 1) {
+    const t0 = performance.now();
+    fn();
+    warmup.push(performance.now() - t0);
+  }
   const samples = [];
-  for (let i = 0; i < WARMUP; i += 1) fn();
   for (let i = 0; i < SAMPLES; i += 1) {
     const t0 = performance.now();
     fn();
     samples.push(performance.now() - t0);
   }
-  return { n, median_ms: median(samples), samples };
+  const first5_ms = median(warmup.slice(0, 5));
+  const last5_ms = median(warmup.slice(-5));
+  const equal = first5_ms === last5_ms;
+  let verdict;
+  if (equal) verdict = "equal / no tier-up";
+  else if (last5_ms < first5_ms) verdict = "tier-up";
+  else verdict = "no tier-up";
+  return {
+    n,
+    median_ms: median(samples),
+    samples,
+    first5_ms,
+    last5_ms,
+    equal,
+    verdict,
+  };
 }
 
 export function crossoverThreshold(perk1, perk32, allk1, allk32) {
@@ -48,7 +74,7 @@ export function crossoverThreshold(perk1, perk32, allk1, allk32) {
  * @param {{
  *   q4kSetForce: (name: string) => void,
  *   q4kSetThreshold: (t: number) => void,
- *   q4kRunPerk?: (n: number) => void,
+ *   q4kRunPerk: (n: number) => void,
  *   q4kThreshold: () => number,
  * }} api
  * @param {NodeJS.ProcessEnv} [env]
@@ -72,10 +98,18 @@ export function applyQ4kPolicy(api, env = process.env) {
     );
   }
 
-  // No second variant in the wasm. Framework stays; do not time a missing kernel.
+  if (typeof api.q4kRunPerk !== "function") {
+    throw new Error("fail-closed: Q4_K auto path requires q4kRunPerk — will not guess a threshold");
+  }
+
   const t0 = performance.now();
+  // Time the shipped variant. Do not write threshold 33 until after the bench.
+  const perk32 = timeCalls(() => api.q4kRunPerk(32), 32);
+  const perk1 = timeCalls(() => api.q4kRunPerk(1), 1);
+  // Only perk ships — no second variant to cross. Threshold 33 after measuring.
+  const threshold = 33;
   api.q4kSetForce("auto");
-  api.q4kSetThreshold(33);
+  api.q4kSetThreshold(threshold);
   return {
     mode: "auto",
     forced: false,
@@ -83,10 +117,18 @@ export function applyQ4kPolicy(api, env = process.env) {
     cost_ms: performance.now() - t0,
     max_abs: null,
     shipped_variants: ["perk"],
-    perk_n1_ms: null,
-    perk_n32_ms: null,
+    perk_n1_ms: perk1.median_ms,
+    perk_n32_ms: perk32.median_ms,
     allk_n1_ms: null,
     allk_n32_ms: null,
+    perk_n32_first5_ms: perk32.first5_ms,
+    perk_n32_last5_ms: perk32.last5_ms,
+    perk_n32_warmup_equal: perk32.equal,
+    perk_n32_warmup_verdict: perk32.verdict,
+    perk_n1_first5_ms: perk1.first5_ms,
+    perk_n1_last5_ms: perk1.last5_ms,
+    perk_n1_warmup_equal: perk1.equal,
+    perk_n1_warmup_verdict: perk1.verdict,
   };
 }
 
