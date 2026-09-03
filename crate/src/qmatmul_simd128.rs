@@ -38,33 +38,19 @@ unsafe fn load16_i8(p: *const i8) -> v128 {
 }
 
 /// SSE `_mm_maddubs_epi16`: unsigned u8 × signed i8, adjacent pair, sat i16.
-/// Feature `relaxed-simd`: `i16x8.relaxed_dot_i8x16_i7x16_s(s, u)`.
-/// Q5_K 0..31 × i8: |product| ≤ 3968, pairwise ≤ 7936 ≪ 32767 — the
-/// impl-defined i7-high-bit and wrap-vs-sat branches are never reached.
+/// Q5_K relaxed-simd path inlines `i16x8.relaxed_dot` inside `q5_sumi`.
+#[cfg(not(feature = "relaxed-simd"))]
 #[inline(always)]
 fn maddubs_epi16(u: v128, s: v128) -> v128 {
-    #[cfg(feature = "relaxed-simd")]
-    {
-        return unsafe { maddubs_relaxed(u, s) };
-    }
-    #[cfg(not(feature = "relaxed-simd"))]
-    {
-        let u_lo = u16x8_extend_low_u8x16(u);
-        let u_hi = u16x8_extend_high_u8x16(u);
-        let s_lo = i16x8_extend_low_i8x16(s);
-        let s_hi = i16x8_extend_high_i8x16(s);
-        let p_lo = i16x8_mul(u_lo, s_lo);
-        let p_hi = i16x8_mul(u_hi, s_hi);
-        let evens = i16x8_shuffle::<0, 2, 4, 6, 8, 10, 12, 14>(p_lo, p_hi);
-        let odds = i16x8_shuffle::<1, 3, 5, 7, 9, 11, 13, 15>(p_lo, p_hi);
-        i16x8_add_sat(evens, odds)
-    }
-}
-
-#[cfg(feature = "relaxed-simd")]
-#[target_feature(enable = "relaxed-simd")]
-unsafe fn maddubs_relaxed(u: v128, s: v128) -> v128 {
-    i16x8_relaxed_dot_i8x16_i7x16(s, u)
+    let u_lo = u16x8_extend_low_u8x16(u);
+    let u_hi = u16x8_extend_high_u8x16(u);
+    let s_lo = i16x8_extend_low_i8x16(s);
+    let s_hi = i16x8_extend_high_i8x16(s);
+    let p_lo = i16x8_mul(u_lo, s_lo);
+    let p_hi = i16x8_mul(u_hi, s_hi);
+    let evens = i16x8_shuffle::<0, 2, 4, 6, 8, 10, 12, 14>(p_lo, p_hi);
+    let odds = i16x8_shuffle::<1, 3, 5, 7, 9, 11, 13, 15>(p_lo, p_hi);
+    i16x8_add_sat(evens, odds)
 }
 
 /// SSE `_mm_madd_epi16` / WASM `i32x4.dot_i16x8`.
@@ -241,23 +227,8 @@ pub unsafe fn vec_dot_q5_k_q8_k_tile(
             let extract = hsum_i32x4(prod) as f32;
             summs[t] = fmaf32(dmin, extract, summs[t]);
 
-            let mut sumi_lo = i32x4_splat(0);
-            let mut sumi_hi = i32x4_splat(0);
             let q8 = yb.qs.as_ptr();
-
-            for g in 0..8 {
-                let q8_off = g * 32;
-                let q8_lo = load16_i8(q8.add(q8_off));
-                let q8_hi = load16_i8(q8.add(q8_off + 16));
-                sumi_lo = i32x4_add(
-                    sumi_lo,
-                    madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][0], q8_lo)),
-                );
-                sumi_hi = i32x4_add(
-                    sumi_hi,
-                    madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][1], q8_hi)),
-                );
-            }
+            let (sumi_lo, sumi_hi) = unsafe { q5_sumi(q8, &q5v, &sc_i16) };
 
             acc_lo[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_lo), acc_lo[t]);
             acc_hi[t] = fma_f32x4(d, f32x4_convert_i32x4(sumi_hi), acc_hi[t]);
@@ -267,6 +238,46 @@ pub unsafe fn vec_dot_q5_k_q8_k_tile(
     for t in 0..n_tile {
         out[t] = hsum_float_8(acc_lo[t], acc_hi[t]) + summs[t];
     }
+}
+
+/// One token's Q5_K integer tree for one superblock. f32 scale stays
+/// outside so LLVM cannot rewrite it. Feature `relaxed-simd` puts the
+/// whole 8-group loop under `target_feature` so `relaxed_dot` inlines
+/// (a per-16-product helper call was a regression on QKV).
+#[cfg(not(feature = "relaxed-simd"))]
+#[inline(always)]
+unsafe fn q5_sumi(q8: *const i8, q5v: &[[v128; 2]; 8], sc_i16: &[v128; 8]) -> (v128, v128) {
+    let mut sumi_lo = i32x4_splat(0);
+    let mut sumi_hi = i32x4_splat(0);
+    for g in 0..8 {
+        let q8_off = g * 32;
+        let q8_lo = load16_i8(q8.add(q8_off));
+        let q8_hi = load16_i8(q8.add(q8_off + 16));
+        sumi_lo = i32x4_add(sumi_lo, madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][0], q8_lo)));
+        sumi_hi = i32x4_add(sumi_hi, madd_epi16(sc_i16[g], maddubs_epi16(q5v[g][1], q8_hi)));
+    }
+    (sumi_lo, sumi_hi)
+}
+
+#[cfg(feature = "relaxed-simd")]
+#[target_feature(enable = "relaxed-simd")]
+unsafe fn q5_sumi(q8: *const i8, q5v: &[[v128; 2]; 8], sc_i16: &[v128; 8]) -> (v128, v128) {
+    let mut sumi_lo = i32x4_splat(0);
+    let mut sumi_hi = i32x4_splat(0);
+    for g in 0..8 {
+        let q8_off = g * 32;
+        let q8_lo = load16_i8(q8.add(q8_off));
+        let q8_hi = load16_i8(q8.add(q8_off + 16));
+        sumi_lo = i32x4_add(
+            sumi_lo,
+            madd_epi16(sc_i16[g], i16x8_relaxed_dot_i8x16_i7x16(q8_lo, q5v[g][0])),
+        );
+        sumi_hi = i32x4_add(
+            sumi_hi,
+            madd_epi16(sc_i16[g], i16x8_relaxed_dot_i8x16_i7x16(q8_hi, q5v[g][1])),
+        );
+    }
+    (sumi_lo, sumi_hi)
 }
 
 /// Reconstruct two 32-value Q5 groups (low / high nibble) × two 16-byte
