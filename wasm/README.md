@@ -22,7 +22,8 @@ shared-memory probe, **and** the pool would be larger than 1.
 `lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable}`
 after load (`sabAvailable` is the capability probe, not the pick).
 Absence of SAB is the ordinary path, not an error. A shared-memory module
-cannot instantiate where SAB is absent — that is why there are two thread artifacts.
+cannot instantiate where SAB is absent — that is why there are separate
+single-thread and threaded artifacts, each with a simd128 and relaxed variant.
 
 ## Relaxed SIMD (issue #43)
 
