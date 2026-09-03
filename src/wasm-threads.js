@@ -58,6 +58,14 @@ export function canUseWasmThreads(env = process.env, global = globalThis) {
   return sabAvailable(global);
 }
 
+let clampWarned = false;
+
+function warnThreadClamp(raw, applied) {
+  if (clampWarned) return;
+  clampWarned = true;
+  console.warn(`MILTON_THREADS=${raw} is out of range; using ${applied}`);
+}
+
 /** `min(MILTON_THREADS || 4, os.availableParallelism())`, at least 1. */
 export function resolveThreadCount(env = process.env) {
   const cores = hostParallelism();
@@ -67,9 +75,15 @@ export function resolveThreadCount(env = process.env) {
   }
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) {
+    warnThreadClamp(raw, 1);
     return 1;
   }
-  return Math.min(Math.floor(n), cores);
+  const want = Math.floor(n);
+  if (want > cores) {
+    warnThreadClamp(raw, cores);
+    return cores;
+  }
+  return want;
 }
 
 /**
