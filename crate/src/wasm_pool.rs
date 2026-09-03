@@ -8,6 +8,7 @@
 //! No allocations on the worker path. Weights and the Q8_K tile are immutable
 //! for the dispatch; each worker writes only its half-open column range.
 
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::gguf::TensorType;
@@ -42,7 +43,7 @@ struct Control {
     n_workers: AtomicU32,
     workers_done: AtomicU32,
     shutdown: AtomicU32,
-    sites: [SiteJob; MAX_SITES],
+    sites: UnsafeCell<[SiteJob; MAX_SITES]>,
 }
 
 // SiteJob is integer-only. The happens-before is epoch Release/Acquire:
@@ -56,7 +57,7 @@ static CONTROL: Control = Control {
     n_workers: AtomicU32::new(0),
     workers_done: AtomicU32::new(0),
     shutdown: AtomicU32::new(0),
-    sites: [SiteJob {
+    sites: UnsafeCell::new([SiteJob {
         ty: 0,
         n_tokens: 0,
         n_in: 0,
@@ -69,7 +70,7 @@ static CONTROL: Control = Control {
         q_len: 0,
         y_ptr: 0,
         y_len: 0,
-    }; MAX_SITES],
+    }; MAX_SITES]),
 };
 
 static WORKERS: AtomicU32 = AtomicU32::new(1);
@@ -119,10 +120,11 @@ pub(crate) fn worker_enter(id: u32) {
         let n_sites = CONTROL.n_sites.load(Ordering::Acquire) as usize;
         let n_workers = CONTROL.n_workers.load(Ordering::Acquire) as usize;
         let wid = id as usize;
+        // SAFETY: coordinator wrote sites before Release on epoch; we
+        // Acquire'd epoch. Pointers stay valid until workers_done join.
+        let sites = unsafe { &*CONTROL.sites.get() };
         for i in 0..n_sites.min(MAX_SITES) {
-            // SAFETY: coordinator wrote sites before Release on epoch; we
-            // Acquire'd epoch. Pointers stay valid until workers_done join.
-            run_site(&CONTROL.sites[i], wid, n_workers);
+            run_site(&sites[i], wid, n_workers);
         }
         let prev = CONTROL.workers_done.fetch_add(1, Ordering::Release);
         if prev + 1 >= n_workers as u32 {
@@ -215,8 +217,13 @@ fn dispatch(jobs: &[SiteJob]) -> bool {
     }
     CONTROL.n_sites.store(jobs.len() as u32, Ordering::Relaxed);
     CONTROL.n_workers.store(n_workers, Ordering::Relaxed);
-    for (i, job) in jobs.iter().enumerate() {
-        CONTROL.sites[i] = *job;
+    // SAFETY: workers are parked (waiting on epoch or not yet started).
+    // Sites become visible after the Release fetch_add below.
+    {
+        let sites = unsafe { &mut *CONTROL.sites.get() };
+        for (i, job) in jobs.iter().enumerate() {
+            sites[i] = *job;
+        }
     }
     CONTROL.workers_done.store(0, Ordering::Relaxed);
     let _ = CONTROL.epoch.fetch_add(1, Ordering::Release);
