@@ -73,6 +73,10 @@ if [[ ! -f "$WASM" ]]; then
 fi
 
 # --- threaded (shared memory). rust-src + bootstrap for build-std atomics. ---
+# build-std crate-hash suffixes (hXXXX in the name section) still differ by
+# rust-src host path after remap. CI is the build of record for
+# milton_threads_bg.wasm — do not replace a CI-matching blob with a local
+# rebuild unless CI byte-compare is red and you are committing CI's output.
 if ! rustup component list --installed | grep -q '^rust-src'; then
   rustup component add rust-src
 fi
