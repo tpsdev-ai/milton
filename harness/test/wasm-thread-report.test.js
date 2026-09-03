@@ -218,3 +218,61 @@ describe("MILTON_THREADS out-of-range clamp warn", () => {
     assert.equal((got.stderr.match(/MILTON_THREADS=/g) || []).length, 1);
   });
 });
+
+describe("lastThreadReport on load failure (issue #54)", () => {
+  it("success then a failed load publishes error + attempted artifact (not stale success)", () => {
+    const script = join(tmpdir(), "milton-thread-report-stale.mjs");
+    writeFileSync(
+      script,
+      `import { embed, load, lastQmatmulKernel, lastThreadReport } from ${JSON.stringify(INDEX)};
+await embed("hello", { prefix: "document" });
+const success = {
+  kernel: lastQmatmulKernel && { ...lastQmatmulKernel },
+  thread: lastThreadReport && { ...lastThreadReport },
+};
+const missing = "/no/such/milton-missing.gguf";
+let loadErr = null;
+try {
+  await load(missing);
+} catch (err) {
+  loadErr = err instanceof Error ? err.message : String(err);
+}
+process.stdout.write(JSON.stringify({
+  success,
+  after: { kernel: lastQmatmulKernel, thread: lastThreadReport },
+  loadErr,
+}));
+`,
+    );
+    const ran = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      timeout: 60000,
+      env: { ...process.env, MILTON_THREADS: "1" },
+    });
+    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+    const got = JSON.parse(ran.stdout);
+    assert.ok(got.loadErr && got.loadErr.includes("milton-missing.gguf"), got.loadErr);
+    assert.equal(got.success.thread.error, undefined);
+    assert.equal(got.success.kernel.error, undefined);
+    assert.deepEqual(Object.keys(got.success.thread).sort(), [
+      "artifact",
+      "availableParallelism",
+      "sabAvailable",
+      "wasm",
+      "workers",
+    ]);
+    assert.deepEqual(Object.keys(got.success.kernel).sort(), ["forced", "kernel", "probe"]);
+    assert.equal(got.success.thread.wasm, "milton_relaxed_bg.wasm");
+    assert.equal(got.success.kernel.kernel, "relaxed");
+    assert.equal(typeof got.after.thread.error, "string");
+    assert.ok(got.after.thread.error.includes("milton-missing.gguf"), got.after.thread.error);
+    assert.equal(got.after.thread.wasm, "milton-missing.gguf");
+    assert.equal(typeof got.after.kernel.error, "string");
+    assert.ok(got.after.kernel.error.includes("milton-missing.gguf"), got.after.kernel.error);
+    assert.equal(got.after.kernel.wasm, "milton-missing.gguf");
+    assert.notDeepEqual(got.after.thread, got.success.thread);
+    assert.notDeepEqual(got.after.kernel, got.success.kernel);
+    assert.notEqual(got.after.thread.wasm, got.success.thread.wasm);
+    assert.equal(got.after.kernel.kernel, "relaxed");
+  });
+});

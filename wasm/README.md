@@ -21,7 +21,9 @@ shared-memory probe, **and** the pool would be larger than 1.
 `MILTON_THREADS=<n>` sizes the pool when the threads artifact is selected.
 `lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable, wasm}`
 after load (`sabAvailable` is the capability probe, not the pick; `wasm` is
-the basename actually instantiated).
+the basename actually instantiated). A failed load publishes the same grain
+with an `error` string and `wasm` set to the artifact that was attempted
+(never a prior success).
 Absence of SAB is the ordinary path, not an error. A shared-memory module
 cannot instantiate where SAB is absent — that is why there are separate
 single-thread and threaded artifacts, each with a simd128 and relaxed variant.
@@ -40,7 +42,8 @@ every bun consumer — including flair's own test suites — takes
 case.
 
 `lastQmatmulKernel` records `{kernel: 'relaxed' | 'simd128', probe, forced}`
-after load (`probe` is the capability, not the pick). On the threaded
+after load (`probe` is the capability, not the pick). On a failed load it
+also carries `error` and `wasm` (the attempted artifact). On the threaded
 path, `lastThreadReport.artifact` is `'threads'` at the same time.
 `MILTON_RELAXED_SIMD=0` forces simd128 even when the probe passes.
 `MILTON_RELAXED_SIMD=1` fail-closes if the probe rejects.
