@@ -35,8 +35,8 @@ impl Milton {
         if gguf.is_empty() {
             return Err(JsError::new("fail-closed: GGUF bytes are empty"));
         }
-        let file = GgufFile::from_bytes(gguf)
-            .map_err(|e| JsError::new(&format!("fail-closed: {e}")))?;
+        let file =
+            GgufFile::from_bytes(gguf).map_err(|e| JsError::new(&format!("fail-closed: {e}")))?;
         let model = Model::from_gguf(&file, EmbedConfig::default())
             .map_err(|e| JsError::new(&format!("fail-closed: {e}")))?;
         Ok(Milton { model })
@@ -68,6 +68,30 @@ impl Milton {
     pub fn embedding_length(&self) -> u32 {
         self.model.meta.embedding_length as u32
     }
+}
+
+/// Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `auto`).
+/// `allk` is not shipped — JS fail-closes before this is called.
+/// Does not live in the wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
+#[wasm_bindgen(js_name = q4kSetForce)]
+pub fn q4k_set_force(name: &str) {
+    crate::qmatmul_simd128::q4k_set_force(name);
+}
+
+#[wasm_bindgen(js_name = q4kSetThreshold)]
+pub fn q4k_set_threshold(t: u32) {
+    crate::qmatmul_simd128::q4k_set_threshold(t);
+}
+
+#[wasm_bindgen(js_name = q4kThreshold)]
+pub fn q4k_threshold() -> u32 {
+    crate::qmatmul_simd128::q4k_threshold()
+}
+
+/// One synthetic superblock × `n_tokens` of the shipped per-k tile (framework).
+#[wasm_bindgen(js_name = q4kRunPerk)]
+pub fn q4k_run_perk(n_tokens: u32) {
+    crate::qmatmul_simd128::q4k_run_perk(n_tokens);
 }
 
 #[cfg(feature = "profile")]

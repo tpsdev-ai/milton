@@ -13,7 +13,14 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import init, { Milton } from "../wasm/milton.js";
+import init, {
+  Milton,
+  q4kSetForce,
+  q4kSetThreshold,
+  q4kRunPerk,
+  q4kThreshold,
+} from "../wasm/milton.js";
+import { applyQ4kPolicy } from "./q4k-calibrate.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WASM_PATH = join(ROOT, "wasm", "milton_bg.wasm");
@@ -53,6 +60,9 @@ let wasmReady = null;
 let instance = null;
 let queue = Promise.resolve();
 
+/** Last load-time Q4_K calibration (or forced-variant) report. */
+export let lastQ4kCalibration = null;
+
 function ensureWasm() {
   if (wasmReady) return wasmReady;
   if (!existsSync(WASM_PATH)) {
@@ -61,7 +71,18 @@ function ensureWasm() {
     );
   }
   const bytes = readFileSync(WASM_PATH);
-  wasmReady = init({ module_or_path: bytes });
+  wasmReady = init({ module_or_path: bytes }).then((w) => {
+    lastQ4kCalibration = applyQ4kPolicy(
+      {
+        q4kSetForce,
+        q4kSetThreshold,
+        q4kRunPerk,
+        q4kThreshold,
+      },
+      process.env,
+    );
+    return w;
+  });
   return wasmReady;
 }
 

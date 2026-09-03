@@ -10,6 +10,7 @@
 
 use std::arch::wasm32::*;
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::dequant::f16_to_f32;
 use crate::qmatmul::{BlockQ8K, GEMM_TILE_TOKENS, QK_K};
@@ -416,10 +417,39 @@ pub fn gemv_q4_k_8x8_q8_k(repack: &[u8], y: &[BlockQ8K], n_out: usize, out: &mut
     gemm_q4_k_8x8_q8_k(repack, y, 1, n_out, out);
 }
 
-/// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. Same integer products and
-/// mul+add tree as `gemv_q4_k_8x8_q8_k`. Each `block_q4_Kx8` — scales and
-/// the 1024-byte `qs` payload — is read once per tile (`k` outer, tokens
-/// inner). Do not switch this to FMA.
+/// Load-time Q4_K policy framework (JS `applyQ4kPolicy`). FORCE / THRESHOLD
+/// stay so a later letter ((b′) lane-wise scale) can plug a second variant
+/// in without a new glue shape. All-k (`Q4kUnpacked`) is **not shipped**:
+/// after WARMUP=100, the optimized tier (`--no-liftoff`) and M4 both stay
+/// at threshold 33 (always per-k). Unknown / `allk` names store AUTO.
+/// Uncalibrated default is 33 = always per-k (#45 HEAD).
+const Q4K_FORCE_AUTO: u32 = 0;
+const Q4K_FORCE_PERK: u32 = 1;
+static Q4K_FORCE: AtomicU32 = AtomicU32::new(Q4K_FORCE_AUTO);
+static Q4K_THRESHOLD: AtomicU32 = AtomicU32::new(33);
+
+pub(crate) fn q4k_set_force(name: &str) {
+    let v = match name {
+        "perk" | "per-k" | "per_k" => Q4K_FORCE_PERK,
+        _ => Q4K_FORCE_AUTO,
+    };
+    Q4K_FORCE.store(v, Ordering::Relaxed);
+}
+
+pub(crate) fn q4k_set_threshold(t: u32) {
+    Q4K_THRESHOLD.store(t.clamp(1, 33), Ordering::Relaxed);
+}
+
+pub(crate) fn q4k_threshold() -> u32 {
+    Q4K_THRESHOLD.load(Ordering::Relaxed)
+}
+
+/// Sequence-tiled SIMD128 Q4_K×Q8_K 8-col GEMM. One shipped inner loop:
+/// **per-k hoist** — #45's integer tree and f32 mul+add, outlined into
+/// `q4k_tile_perk` (`#[inline(never)]`) so LLVM/V8 see a smaller function.
+/// All-k is not in this binary. Do not switch this to FMA. (b) per-32
+/// scale-as-built is out. FORCE is stored for the framework; dispatch
+/// ignores it until a second variant returns.
 pub fn gemm_q4_k_8x8_q8_k(
     repack: &[u8],
     qrows: &[BlockQ8K],
@@ -427,9 +457,6 @@ pub fn gemm_q4_k_8x8_q8_k(
     n_out: usize,
     out: &mut [f32],
 ) {
-    const KMASK1: u32 = 0x3f3f3f3f;
-    const KMASK2: u32 = 0x0f0f0f0f;
-    const KMASK3: u32 = 0x03030303;
     debug_assert!(n_tokens > 0);
     let n_blocks = qrows.len() / n_tokens;
     debug_assert_eq!(repack.len(), (n_out / 8) * n_blocks * Q4_KX8_BYTES);
@@ -439,131 +466,296 @@ pub fn gemm_q4_k_8x8_q8_k(
 
     for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
         let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
-        for x in 0..n_groups {
-            let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
-            let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
-            for l in 0..n_blocks {
-                let off = (x * n_blocks + l) * Q4_KX8_BYTES;
-                let blk = &repack[off..off + Q4_KX8_BYTES];
-                let mut d = [0.0f32; 8];
-                let mut dmin = [0.0f32; 8];
-                for j in 0..8 {
-                    d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
-                    dmin[j] =
-                        f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
-                }
-                let scales = &blk[32..128];
-                let qs = &blk[128..];
+        q4k_tile_perk(repack, qrows, t0, tn, n_blocks, n_groups, n_out, m4, out);
+    }
+}
 
-                let mut utmp = [0u32; 32];
-                for sb in 0..8 {
-                    let base = sb * 12;
-                    utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
-                    utmp[sb * 4 + 1] =
-                        u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
-                    utmp[sb * 4 + 2] =
-                        u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
-                    utmp[sb * 4 + 3] = ((utmp[sb * 4 + 2] >> 4) & KMASK2)
-                        | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
-                    let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
-                    utmp[sb * 4 + 1] =
-                        (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
-                    utmp[sb * 4 + 2] = uaux_0;
-                    utmp[sb * 4] &= KMASK1;
-                }
-                let mut ub = [0u8; 128];
-                for i in 0..32 {
-                    ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
-                }
-
-                // Read qs once per superblock (k outer), apply to every token.
-                // Same integer products as the per-token GEMV; float mul+add
-                // still runs once per superblock after iacc is complete.
-                let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
-                for k in 0..16 {
-                    let scale_base = (k / 4) * 32;
-                    let mut v0_lo = [m4; 4];
-                    let mut v0_hi = [m4; 4];
-                    let mut v1_lo = [m4; 4];
-                    let mut v1_hi = [m4; 4];
-                    let mut s0a = [0i32; 4];
-                    let mut s1a = [0i32; 4];
-                    let mut s0b = [0i32; 4];
-                    let mut s1b = [0i32; 4];
-                    unsafe {
-                        for pair in 0..4 {
-                            let j = pair * 2;
-                            let packed = load16(qs.as_ptr().add(k * 64 + j * 8));
-                            let qs_lo = u16x8_extend_low_u8x16(packed);
-                            let qs_hi = u16x8_extend_high_u8x16(packed);
-                            v0_lo[pair] = v128_and(qs_lo, m4);
-                            v0_hi[pair] = v128_and(qs_hi, m4);
-                            v1_lo[pair] = u16x8_shr(qs_lo, 4);
-                            v1_hi[pair] = u16x8_shr(qs_hi, 4);
-                            s0a[pair] = i32::from(ub[scale_base + j]);
-                            s1a[pair] = i32::from(ub[scale_base + 16 + j]);
-                            s0b[pair] = i32::from(ub[scale_base + j + 1]);
-                            s1b[pair] = i32::from(ub[scale_base + 16 + j + 1]);
-                        }
-                    }
-                    for ti in 0..tn {
-                        let yb = &qrows[(t0 + ti) * n_blocks + l];
-                        let a_off = (k >> 2) * 64 + (k % 4) * 8;
-                        unsafe {
-                            let a0 = i16x8_extend_low_i8x16(u64x2(
-                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
-                                0,
-                            ));
-                            let a1 = i16x8_extend_low_i8x16(u64x2(
-                                ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
-                                0,
-                            ));
-                            for pair in 0..4 {
-                                let j = pair * 2;
-                                let sum0a = hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
-                                let sum1a = hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
-                                let sum0b = hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
-                                let sum1b = hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
-                                iacc[ti][j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
-                                iacc[ti][j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
-                            }
-                        }
-                    }
+/// #45 per-k hoist. Unpack one 16-byte pair-row into `[v128; 4]` locals,
+/// tokens inner. Same `hsum_i16x8` (`i32x4.dot`) + per-stripe scale.
+#[inline(never)]
+fn q4k_tile_perk(
+    repack: &[u8],
+    qrows: &[BlockQ8K],
+    t0: usize,
+    tn: usize,
+    n_blocks: usize,
+    n_groups: usize,
+    n_out: usize,
+    m4: v128,
+    out: &mut [f32],
+) {
+    for x in 0..n_groups {
+        let mut sumf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+        let mut sum_minf = [[0.0f32; 8]; GEMM_TILE_TOKENS];
+        for l in 0..n_blocks {
+            let off = (x * n_blocks + l) * Q4_KX8_BYTES;
+            let (d, dmin, ub, qs) = unpack_q4_kx8_header(&repack[off..off + Q4_KX8_BYTES]);
+            let mut iacc = [[0i32; 8]; GEMM_TILE_TOKENS];
+            for k in 0..16 {
+                let mut v0_lo = [m4; 4];
+                let mut v0_hi = [m4; 4];
+                let mut v1_lo = [m4; 4];
+                let mut v1_hi = [m4; 4];
+                let (s0a, s1a, s0b, s1b) = stripe_scales(&ub, k);
+                unsafe {
+                    unpack_stripe(qs, k, m4, &mut v0_lo, &mut v0_hi, &mut v1_lo, &mut v1_hi);
                 }
                 for ti in 0..tn {
                     let yb = &qrows[(t0 + ti) * n_blocks + l];
-                    let mut iacc_min = [0i32; 8];
-                    for sb in 0..8 {
-                        let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
-                        let mins = unsafe {
-                            u16x8_extend_low_u8x16(u64x2(
-                                ptr::read_unaligned(ub.as_ptr().add(8 + sb * 16).cast::<u64>()),
-                                0,
-                            ))
-                        };
-                        let prod_lo = i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
-                        let prod_hi = i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
-                        iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
-                        iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
-                        iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
-                        iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
-                        iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
-                        iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
-                        iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
-                        iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
-                    }
-                    for j in 0..8 {
-                        let ds = d[j] * yb.d;
-                        sumf[ti][j] += iacc[ti][j] as f32 * ds;
-                        sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
+                    unsafe {
+                        q4k_stripe_iacc(
+                            &v0_lo,
+                            &v0_hi,
+                            &v1_lo,
+                            &v1_hi,
+                            &s0a,
+                            &s1a,
+                            &s0b,
+                            &s1b,
+                            yb,
+                            k,
+                            &mut iacc[ti],
+                        );
                     }
                 }
             }
-            for ti in 0..tn {
-                for j in 0..8 {
-                    out[(t0 + ti) * n_out + x * 8 + j] = sumf[ti][j] - sum_minf[ti][j];
-                }
-            }
+            q4k_mins_f32(
+                qrows,
+                t0,
+                tn,
+                n_blocks,
+                l,
+                &d,
+                &dmin,
+                &ub,
+                &iacc,
+                &mut sumf,
+                &mut sum_minf,
+            );
+        }
+        write_tile_out(out, t0, tn, n_out, x, &sumf, &sum_minf);
+    }
+}
+
+fn unpack_q4_kx8_header(blk: &[u8]) -> ([f32; 8], [f32; 8], [u8; 128], *const u8) {
+    const KMASK1: u32 = 0x3f3f3f3f;
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+    debug_assert_eq!(blk.len(), Q4_KX8_BYTES);
+    let mut d = [0.0f32; 8];
+    let mut dmin = [0.0f32; 8];
+    for j in 0..8 {
+        d[j] = f16_to_f32(u16::from_le_bytes([blk[j * 2], blk[j * 2 + 1]]));
+        dmin[j] = f16_to_f32(u16::from_le_bytes([blk[16 + j * 2], blk[16 + j * 2 + 1]]));
+    }
+    let scales = &blk[32..128];
+    let mut utmp = [0u32; 32];
+    for sb in 0..8 {
+        let base = sb * 12;
+        utmp[sb * 4] = u32::from_le_bytes(scales[base..base + 4].try_into().unwrap());
+        utmp[sb * 4 + 1] = u32::from_le_bytes(scales[base + 4..base + 8].try_into().unwrap());
+        utmp[sb * 4 + 2] = u32::from_le_bytes(scales[base + 8..base + 12].try_into().unwrap());
+        utmp[sb * 4 + 3] =
+            ((utmp[sb * 4 + 2] >> 4) & KMASK2) | (((utmp[sb * 4 + 1] >> 6) & KMASK3) << 4);
+        let uaux_0 = utmp[sb * 4 + 1] & KMASK1;
+        utmp[sb * 4 + 1] = (utmp[sb * 4 + 2] & KMASK2) | (((utmp[sb * 4] >> 6) & KMASK3) << 4);
+        utmp[sb * 4 + 2] = uaux_0;
+        utmp[sb * 4] &= KMASK1;
+    }
+    let mut ub = [0u8; 128];
+    for i in 0..32 {
+        ub[i * 4..i * 4 + 4].copy_from_slice(&utmp[i].to_le_bytes());
+    }
+    (d, dmin, ub, blk[128..].as_ptr())
+}
+
+/// 16 bytes = 2 columns × 8 packed nibbles. In-bounds:
+/// `k*64 + pair*16 ≤ 15*64 + 48 = 1008`, `+16 = 1024`.
+#[inline(always)]
+unsafe fn unpack_stripe(
+    qs: *const u8,
+    k: usize,
+    m4: v128,
+    v0_lo: &mut [v128; 4],
+    v0_hi: &mut [v128; 4],
+    v1_lo: &mut [v128; 4],
+    v1_hi: &mut [v128; 4],
+) {
+    for pair in 0..4 {
+        let j = pair * 2;
+        let packed = load16(qs.add(k * 64 + j * 8));
+        let qs_lo = u16x8_extend_low_u8x16(packed);
+        let qs_hi = u16x8_extend_high_u8x16(packed);
+        v0_lo[pair] = v128_and(qs_lo, m4);
+        v0_hi[pair] = v128_and(qs_hi, m4);
+        v1_lo[pair] = u16x8_shr(qs_lo, 4);
+        v1_hi[pair] = u16x8_shr(qs_hi, 4);
+    }
+}
+
+#[inline(always)]
+fn stripe_scales(ub: &[u8; 128], k: usize) -> ([i32; 4], [i32; 4], [i32; 4], [i32; 4]) {
+    let scale_base = (k / 4) * 32;
+    let mut s0a = [0i32; 4];
+    let mut s1a = [0i32; 4];
+    let mut s0b = [0i32; 4];
+    let mut s1b = [0i32; 4];
+    for pair in 0..4 {
+        let j = pair * 2;
+        s0a[pair] = i32::from(ub[scale_base + j]);
+        s1a[pair] = i32::from(ub[scale_base + 16 + j]);
+        s0b[pair] = i32::from(ub[scale_base + j + 1]);
+        s1b[pair] = i32::from(ub[scale_base + 16 + j + 1]);
+    }
+    (s0a, s1a, s0b, s1b)
+}
+
+/// Shared integer products + per-stripe scale. Same tree as #45 HEAD.
+/// `a_off+32+7 ≤ 255` (`k≤15`).
+#[inline(always)]
+unsafe fn q4k_stripe_iacc(
+    v0_lo: &[v128; 4],
+    v0_hi: &[v128; 4],
+    v1_lo: &[v128; 4],
+    v1_hi: &[v128; 4],
+    s0a: &[i32; 4],
+    s1a: &[i32; 4],
+    s0b: &[i32; 4],
+    s1b: &[i32; 4],
+    yb: &BlockQ8K,
+    k: usize,
+    iacc: &mut [i32; 8],
+) {
+    let a_off = (k >> 2) * 64 + (k % 4) * 8;
+    let a0 = i16x8_extend_low_i8x16(u64x2(
+        ptr::read_unaligned(yb.qs.as_ptr().add(a_off).cast::<u64>()),
+        0,
+    ));
+    let a1 = i16x8_extend_low_i8x16(u64x2(
+        ptr::read_unaligned(yb.qs.as_ptr().add(a_off + 32).cast::<u64>()),
+        0,
+    ));
+    for pair in 0..4 {
+        let j = pair * 2;
+        let sum0a = hsum_i16x8(i16x8_mul(v0_lo[pair], a0));
+        let sum1a = hsum_i16x8(i16x8_mul(v1_lo[pair], a1));
+        let sum0b = hsum_i16x8(i16x8_mul(v0_hi[pair], a0));
+        let sum1b = hsum_i16x8(i16x8_mul(v1_hi[pair], a1));
+        iacc[j] += s0a[pair] * sum0a + s1a[pair] * sum1a;
+        iacc[j + 1] += s0b[pair] * sum0b + s1b[pair] * sum1b;
+    }
+}
+
+fn q4k_mins_f32(
+    qrows: &[BlockQ8K],
+    t0: usize,
+    tn: usize,
+    n_blocks: usize,
+    l: usize,
+    d: &[f32; 8],
+    dmin: &[f32; 8],
+    ub: &[u8; 128],
+    iacc: &[[i32; 8]; GEMM_TILE_TOKENS],
+    sumf: &mut [[f32; 8]; GEMM_TILE_TOKENS],
+    sum_minf: &mut [[f32; 8]; GEMM_TILE_TOKENS],
+) {
+    for ti in 0..tn {
+        let yb = &qrows[(t0 + ti) * n_blocks + l];
+        let mut iacc_min = [0i32; 8];
+        for sb in 0..8 {
+            let bsum = i32::from(yb.bsums[sb * 2]) + i32::from(yb.bsums[sb * 2 + 1]);
+            let mins = unsafe {
+                u16x8_extend_low_u8x16(u64x2(
+                    ptr::read_unaligned(ub.as_ptr().add(8 + sb * 16).cast::<u64>()),
+                    0,
+                ))
+            };
+            let prod_lo = i32x4_mul(i32x4_extend_low_i16x8(mins), i32x4_splat(bsum));
+            let prod_hi = i32x4_mul(i32x4_extend_high_i16x8(mins), i32x4_splat(bsum));
+            iacc_min[0] += i32x4_extract_lane::<0>(prod_lo);
+            iacc_min[1] += i32x4_extract_lane::<1>(prod_lo);
+            iacc_min[2] += i32x4_extract_lane::<2>(prod_lo);
+            iacc_min[3] += i32x4_extract_lane::<3>(prod_lo);
+            iacc_min[4] += i32x4_extract_lane::<0>(prod_hi);
+            iacc_min[5] += i32x4_extract_lane::<1>(prod_hi);
+            iacc_min[6] += i32x4_extract_lane::<2>(prod_hi);
+            iacc_min[7] += i32x4_extract_lane::<3>(prod_hi);
+        }
+        for j in 0..8 {
+            let ds = d[j] * yb.d;
+            sumf[ti][j] += iacc[ti][j] as f32 * ds;
+            sum_minf[ti][j] += iacc_min[j] as f32 * (dmin[j] * yb.d);
         }
     }
+}
+
+fn write_tile_out(
+    out: &mut [f32],
+    t0: usize,
+    tn: usize,
+    n_out: usize,
+    x: usize,
+    sumf: &[[f32; 8]; GEMM_TILE_TOKENS],
+    sum_minf: &[[f32; 8]; GEMM_TILE_TOKENS],
+) {
+    for ti in 0..tn {
+        for j in 0..8 {
+            out[(t0 + ti) * n_out + x * 8 + j] = sumf[ti][j] - sum_minf[ti][j];
+        }
+    }
+}
+
+/// Synthetic one-superblock / 8-col / 1-block payload for the framework hook.
+fn synth_repack() -> [u8; Q4_KX8_BYTES] {
+    let mut blk = [0u8; Q4_KX8_BYTES];
+    // f16 1.0 = 0x3C00
+    for j in 0..8 {
+        blk[j * 2] = 0x00;
+        blk[j * 2 + 1] = 0x3C;
+        blk[16 + j * 2] = 0x00;
+        blk[16 + j * 2 + 1] = 0x3C;
+    }
+    for i in 32..128 {
+        blk[i] = (i as u8).wrapping_mul(17);
+    }
+    for i in 128..Q4_KX8_BYTES {
+        blk[i] = (i as u8).wrapping_mul(13);
+    }
+    blk
+}
+
+fn synth_q8(n: usize) -> Vec<BlockQ8K> {
+    (0..n)
+        .map(|t| {
+            let mut qs = [0i8; QK_K];
+            let mut bsums = [0i16; 16];
+            for i in 0..QK_K {
+                qs[i] = ((t.wrapping_mul(17) + i.wrapping_mul(3)) % 127) as i8 - 63;
+            }
+            for g in 0..16 {
+                let mut s = 0i16;
+                for i in 0..16 {
+                    s += i16::from(qs[g * 16 + i]);
+                }
+                bsums[g] = s;
+            }
+            BlockQ8K {
+                d: 0.125,
+                qs,
+                bsums,
+            }
+        })
+        .collect()
+}
+
+/// One superblock × `n_tokens` of the shipped per-k tile. Framework hook
+/// for a later second-variant letter; not timed at init while only perk ships.
+pub(crate) fn q4k_run_perk(n_tokens: u32) {
+    let n = (n_tokens as usize).clamp(1, GEMM_TILE_TOKENS);
+    let repack = synth_repack();
+    let qrows = synth_q8(n);
+    let m4 = i16x8_splat(0x0F);
+    let mut out = [0.0f32; GEMM_TILE_TOKENS * 8];
+    q4k_tile_perk(&repack, &qrows, 0, n, 1, 1, 8, m4, &mut out);
+    std::hint::black_box(out[0]);
 }
