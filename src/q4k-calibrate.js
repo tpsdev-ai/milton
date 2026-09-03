@@ -1,17 +1,14 @@
 /**
- * Load-time Q4_K {per-k | all-k} calibration.
+ * Load-time Q4_K calibration framework.
  *
- * Both variants are bit-exact (same integer tree, same f32 stage). The
- * choice cannot change results — only time. No engine / CPU sniffing.
+ * WARMUP=100 (Kern #47): V8 Liftoff → TurboFan is invocation-driven.
+ * Kept so a later second variant ((b′) lane-wise scale) measures the
+ * optimized tier. All-k (`Q4kUnpacked`) is not shipped — after the
+ * tier fix, `--no-liftoff` on this VM and M4 both stay at threshold 33
+ * (always per-k). Auto path therefore records threshold 33 and does
+ * not time a missing kernel. Crossover math is unchanged for (b′).
  *
- * Work bound: one superblock × 32 tokens, both variants, plus n=1 so the
- * crossover is measured rather than assumed. Threshold rule is documented
- * in the #46 plan-first comment.
- *
- * WARMUP=100 (Kern #47): V8 Liftoff → TurboFan is invocation-driven. Two
- * warmups measured the baseline compiler; the steady-state embedder runs
- * TurboFan. Node 22 default `--wasm-tiering-budget=13000000` (byte budget,
- * not a 30-call count). 100 calls is the review ASK; report cost_ms.
+ * Calibration cannot change results — only time. No engine / CPU sniffing.
  */
 
 const WARMUP = 100;
@@ -35,7 +32,7 @@ function timeCalls(fn, n) {
 }
 
 export function crossoverThreshold(perk1, perk32, allk1, allk32) {
-  // Fail closed on time: if all-k does not win the full tile, never pick it.
+  // Fail closed on time: if the second variant does not win the full tile, never pick it.
   if (!(allk32 < perk32)) return 33;
   if (!(allk1 > perk1)) return 1;
   const dp = perk32 - perk1;
@@ -51,9 +48,7 @@ export function crossoverThreshold(perk1, perk32, allk1, allk32) {
  * @param {{
  *   q4kSetForce: (name: string) => void,
  *   q4kSetThreshold: (t: number) => void,
- *   q4kRunPerk: (n: number) => void,
- *   q4kRunAllk: (n: number) => void,
- *   q4kVariantMaxAbs: () => number,
+ *   q4kRunPerk?: (n: number) => void,
  *   q4kThreshold: () => number,
  * }} api
  * @param {NodeJS.ProcessEnv} [env]
@@ -68,56 +63,31 @@ export function applyQ4kPolicy(api, env = process.env) {
       threshold: api.q4kThreshold(),
       cost_ms: 0,
       max_abs: null,
+      shipped_variants: ["perk"],
     };
   }
   if (raw === "allk" || raw === "all-k" || raw === "all_k") {
-    api.q4kSetForce("allk");
-    return {
-      mode: "allk",
-      forced: true,
-      threshold: api.q4kThreshold(),
-      cost_ms: 0,
-      max_abs: null,
-    };
+    throw new Error(
+      "fail-closed: Q4_K all-k is not shipped — optimized-tier pick is always per-k",
+    );
   }
 
+  // No second variant in the wasm. Framework stays; do not time a missing kernel.
   const t0 = performance.now();
-  const maxAbs = api.q4kVariantMaxAbs();
-  if (!(maxAbs === 0)) {
-    throw new Error(
-      `fail-closed: Q4_K per-k vs all-k not bit-exact max_abs=${maxAbs}`,
-    );
-  }
-  // Full-tile first: if all-k loses n=32, skip n=1 (threshold=33).
-  const perk32 = timeCalls(() => api.q4kRunPerk(32), 32);
-  const allk32 = timeCalls(() => api.q4kRunAllk(32), 32);
-  let perk1 = { n: 1, median_ms: null, samples: [] };
-  let allk1 = { n: 1, median_ms: null, samples: [] };
-  let threshold;
-  if (!(allk32.median_ms < perk32.median_ms)) {
-    threshold = 33;
-  } else {
-    perk1 = timeCalls(() => api.q4kRunPerk(1), 1);
-    allk1 = timeCalls(() => api.q4kRunAllk(1), 1);
-    threshold = crossoverThreshold(
-      perk1.median_ms,
-      perk32.median_ms,
-      allk1.median_ms,
-      allk32.median_ms,
-    );
-  }
   api.q4kSetForce("auto");
-  api.q4kSetThreshold(threshold);
-  const costMs = performance.now() - t0;
+  api.q4kSetThreshold(33);
   return {
     mode: "auto",
     forced: false,
-    threshold,
-    cost_ms: costMs,
-    max_abs: maxAbs,
-    perk_n1_ms: perk1.median_ms,
-    perk_n32_ms: perk32.median_ms,
-    allk_n1_ms: allk1.median_ms,
-    allk_n32_ms: allk32.median_ms,
+    threshold: api.q4kThreshold(),
+    cost_ms: performance.now() - t0,
+    max_abs: null,
+    shipped_variants: ["perk"],
+    perk_n1_ms: null,
+    perk_n32_ms: null,
+    allk_n1_ms: null,
+    allk_n32_ms: null,
   };
 }
+
+export { WARMUP, SAMPLES, timeCalls };

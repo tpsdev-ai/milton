@@ -101,7 +101,8 @@ function getArrayF32FromWasm0(ptr, len) {
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 /**
- * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `allk` | `auto`).
+ * Harness / JS glue: force a Q4_K inner-loop variant (`perk` | `auto`).
+ * `allk` is not shipped — JS fail-closes before this is called.
  * Does not live in the wasm as an env-var string — JS reads `MILTON_Q4K_VARIANT`.
  * @param {string} name
  */
@@ -127,28 +128,11 @@ export function q4kThreshold() {
 }
 
 /**
- * One synthetic superblock × `n_tokens` of the per-k variant (calibrator).
+ * One synthetic superblock × `n_tokens` of the shipped per-k tile (framework).
  * @param {number} n_tokens
  */
 export function q4kRunPerk(n_tokens) {
     wasm.q4kRunPerk(n_tokens);
-}
-
-/**
- * One synthetic superblock × `n_tokens` of the all-k variant (calibrator).
- * @param {number} n_tokens
- */
-export function q4kRunAllk(n_tokens) {
-    wasm.q4kRunAllk(n_tokens);
-}
-
-/**
- * Bit-exact check: `max_abs` between the two variants on the synth tile.
- * @returns {number}
- */
-export function q4kVariantMaxAbs() {
-    const ret = wasm.q4kVariantMaxAbs();
-    return ret;
 }
 
 const MiltonFinalization = (typeof FinalizationRegistry === 'undefined')

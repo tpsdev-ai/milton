@@ -42,7 +42,6 @@
     "wasm:gate": "node harness/scripts/run-wasm-gate.mjs",
     "wasm:compare": "node harness/scripts/compare-native-wasm.mjs",
     "wasm:compare:q4k-perk": "MILTON_Q4K_VARIANT=perk node harness/scripts/compare-native-wasm.mjs",
-    "wasm:compare:q4k-allk": "MILTON_Q4K_VARIANT=allk node harness/scripts/compare-native-wasm.mjs",
     "wasm:compare-verdict": "node harness/scripts/wasm-compare-verdict.mjs",
     "wasm:compare:libm-sin": "MILTON_ROPE_LIBM_SIN=1 node harness/scripts/compare-native-wasm.mjs",
     "wasm:compare:libm-sin-must-fire": "node harness/scripts/wasm-compare-libm-sin-must-fire.mjs",

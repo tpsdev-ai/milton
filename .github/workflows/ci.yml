@@ -153,7 +153,5 @@ jobs:
         run: npm run wasm:compare-verdict
       - name: wasm:compare Q4_K per-k lane
         run: npm run wasm:compare:q4k-perk
-      - name: wasm:compare Q4_K all-k lane
-        run: npm run wasm:compare:q4k-allk
       - name: wasm:compare must-fire (rope-libm-sin)
         run: npm run wasm:compare:libm-sin-must-fire
