@@ -222,6 +222,8 @@ describe("MILTON_THREADS out-of-range clamp warn", () => {
 describe("lastThreadReport on load failure (issue #54)", () => {
   it("success then a failed load publishes error + attempted artifact (not stale success)", () => {
     const script = join(tmpdir(), "milton-thread-report-stale.mjs");
+    const missing = join(tmpdir(), "milton-missing.gguf");
+    const tmp = tmpdir();
     writeFileSync(
       script,
       `import { embed, load, lastQmatmulKernel, lastThreadReport } from ${JSON.stringify(INDEX)};
@@ -230,7 +232,7 @@ const success = {
   kernel: lastQmatmulKernel && { ...lastQmatmulKernel },
   thread: lastThreadReport && { ...lastThreadReport },
 };
-const missing = "/no/such/milton-missing.gguf";
+const missing = ${JSON.stringify(missing)};
 let loadErr = null;
 try {
   await load(missing);
@@ -241,6 +243,7 @@ process.stdout.write(JSON.stringify({
   success,
   after: { kernel: lastQmatmulKernel, thread: lastThreadReport },
   loadErr,
+  tmp: ${JSON.stringify(tmp)},
 }));
 `,
     );
@@ -267,17 +270,27 @@ process.stdout.write(JSON.stringify({
     assert.equal(typeof got.after.thread.error, "string");
     assert.ok(got.after.thread.error.includes("milton-missing.gguf"), got.after.thread.error);
     assert.equal(
-      got.after.thread.error.includes("/no/such/"),
+      got.after.thread.error.includes(got.tmp),
       false,
-      `published error must not leak a filesystem path: ${got.after.thread.error}`,
+      `published error must not contain the temp directory path ${got.tmp}: ${got.after.thread.error}`,
+    );
+    assert.equal(
+      got.after.thread.error.includes("/"),
+      false,
+      `published error must be basename-only, no directory separators: ${got.after.thread.error}`,
     );
     assert.equal(got.after.thread.wasm, "milton-missing.gguf");
     assert.equal(typeof got.after.kernel.error, "string");
     assert.ok(got.after.kernel.error.includes("milton-missing.gguf"), got.after.kernel.error);
     assert.equal(
-      got.after.kernel.error.includes("/no/such/"),
+      got.after.kernel.error.includes(got.tmp),
       false,
-      `published error must not leak a filesystem path: ${got.after.kernel.error}`,
+      `published error must not contain the temp directory path ${got.tmp}: ${got.after.kernel.error}`,
+    );
+    assert.equal(
+      got.after.kernel.error.includes("/"),
+      false,
+      `published error must be basename-only, no directory separators: ${got.after.kernel.error}`,
     );
     assert.equal(got.after.kernel.wasm, "milton-missing.gguf");
     assert.notDeepEqual(got.after.thread, got.success.thread);

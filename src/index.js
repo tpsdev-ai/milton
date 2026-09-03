@@ -167,16 +167,13 @@ function republishLastSuccess() {
   lastQmatmulKernel = lastSuccessPick.kernel;
 }
 
-function errorText(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
- * Report-facing error string: basename only. Thrown errors may still
- * name the full path for the operator; the published report must not.
+ * Report-facing error string: basename only. Absolute paths in
+ * `err.message` (GGUF-not-found, Node ENOENT) are rewritten so the
+ * published report cannot leak a filesystem path. Refs #54 / Sherlock.
  */
-function sanitizeReportError(err, attemptedPath) {
-  let msg = errorText(err);
+function errorText(err, attemptedPath) {
+  let msg = err instanceof Error ? err.message : String(err);
   if (typeof attemptedPath === "string" && attemptedPath.length > 0) {
     const base = basename(attemptedPath);
     if (base && attemptedPath !== base && msg.includes(attemptedPath)) {
@@ -195,7 +192,7 @@ function sanitizeReportError(err, attemptedPath) {
  * `wasmFile` is the basename the loader was trying — never a full path.
  */
 function publishLoadError(err, { artifact, workers, wasmFile, kernel, attemptedPath } = {}) {
-  const error = sanitizeReportError(err, attemptedPath);
+  const error = errorText(err, attemptedPath);
   const wasm = wasmFile || lastWasmFile || "";
   const art =
     artifact === "threads" || artifact === "single"
@@ -329,7 +326,7 @@ export async function load(ggufPath) {
   const attempted = basename(path);
   if (!existsSync(path)) {
     const err = new Error(
-      `fail-closed: GGUF not found at ${path} — set MILTON_GGUF or run npm run harness:setup`,
+      `fail-closed: GGUF not found at ${attempted} — set MILTON_GGUF or run npm run harness:setup`,
     );
     publishLoadError(err, {
       artifact: lastThreadReport?.artifact,
