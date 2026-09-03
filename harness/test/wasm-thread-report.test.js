@@ -266,13 +266,69 @@ process.stdout.write(JSON.stringify({
     assert.equal(got.success.kernel.kernel, "relaxed");
     assert.equal(typeof got.after.thread.error, "string");
     assert.ok(got.after.thread.error.includes("milton-missing.gguf"), got.after.thread.error);
+    assert.equal(
+      got.after.thread.error.includes("/no/such/"),
+      false,
+      `published error must not leak a filesystem path: ${got.after.thread.error}`,
+    );
     assert.equal(got.after.thread.wasm, "milton-missing.gguf");
     assert.equal(typeof got.after.kernel.error, "string");
     assert.ok(got.after.kernel.error.includes("milton-missing.gguf"), got.after.kernel.error);
+    assert.equal(
+      got.after.kernel.error.includes("/no/such/"),
+      false,
+      `published error must not leak a filesystem path: ${got.after.kernel.error}`,
+    );
     assert.equal(got.after.kernel.wasm, "milton-missing.gguf");
     assert.notDeepEqual(got.after.thread, got.success.thread);
     assert.notDeepEqual(got.after.kernel, got.success.kernel);
     assert.notEqual(got.after.thread.wasm, got.success.thread.wasm);
     assert.equal(got.after.kernel.kernel, "relaxed");
+  });
+
+  it("successful load after a failed load republishes success (not a stale error)", () => {
+    const script = join(tmpdir(), "milton-thread-report-recover.mjs");
+    writeFileSync(
+      script,
+      `import { embed, load, lastQmatmulKernel, lastThreadReport } from ${JSON.stringify(INDEX)};
+await embed("hello", { prefix: "document" });
+const success = {
+  kernel: lastQmatmulKernel && { ...lastQmatmulKernel },
+  thread: lastThreadReport && { ...lastThreadReport },
+};
+try { await load("/no/such/milton-missing.gguf"); } catch { /* expected */ }
+const failed = {
+  kernel: lastQmatmulKernel && { ...lastQmatmulKernel },
+  thread: lastThreadReport && { ...lastThreadReport },
+};
+await load();
+process.stdout.write(JSON.stringify({
+  success,
+  failed,
+  recovered: { kernel: lastQmatmulKernel, thread: lastThreadReport },
+}));
+`,
+    );
+    const ran = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      timeout: 60000,
+      env: { ...process.env, MILTON_THREADS: "1" },
+    });
+    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+    const got = JSON.parse(ran.stdout);
+    assert.equal(typeof got.failed.thread.error, "string");
+    assert.equal(got.recovered.thread.error, undefined);
+    assert.equal(got.recovered.kernel.error, undefined);
+    assert.deepEqual(Object.keys(got.recovered.thread).sort(), [
+      "artifact",
+      "availableParallelism",
+      "sabAvailable",
+      "wasm",
+      "workers",
+    ]);
+    assert.deepEqual(Object.keys(got.recovered.kernel).sort(), ["forced", "kernel", "probe"]);
+    assert.equal(got.recovered.thread.wasm, "milton_relaxed_bg.wasm");
+    assert.deepEqual(got.recovered.thread, got.success.thread);
+    assert.deepEqual(got.recovered.kernel, got.success.kernel);
   });
 });

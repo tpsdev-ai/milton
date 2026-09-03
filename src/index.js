@@ -128,6 +128,9 @@ export let lastQmatmulKernel = null;
 
 export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
 
+/** Last successful wasm pick — used to republish after a later successful `load()`. */
+let lastSuccessPick = null;
+
 function publishThreadReport(artifact, workers, wasmFile) {
   lastWasmFile = wasmFile;
   lastThreadReport = {
@@ -141,17 +144,58 @@ function publishThreadReport(artifact, workers, wasmFile) {
   lastThreadCount = workers;
 }
 
+function rememberSuccess(artifact, workers, wasmFile, kernel) {
+  lastSuccessPick = {
+    artifact,
+    workers,
+    wasmFile,
+    kernel: {
+      kernel: kernel.kernel,
+      probe: Boolean(kernel.probe),
+      forced: Boolean(kernel.forced),
+    },
+  };
+}
+
+function republishLastSuccess() {
+  if (!lastSuccessPick) return;
+  publishThreadReport(
+    lastSuccessPick.artifact,
+    lastSuccessPick.workers,
+    lastSuccessPick.wasmFile,
+  );
+  lastQmatmulKernel = lastSuccessPick.kernel;
+}
+
 function errorText(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
 /**
+ * Report-facing error string: basename only. Thrown errors may still
+ * name the full path for the operator; the published report must not.
+ */
+function sanitizeReportError(err, attemptedPath) {
+  let msg = errorText(err);
+  if (typeof attemptedPath === "string" && attemptedPath.length > 0) {
+    const base = basename(attemptedPath);
+    if (base && attemptedPath !== base && msg.includes(attemptedPath)) {
+      msg = msg.split(attemptedPath).join(base);
+    }
+  }
+  return msg.replace(
+    /(^|[\s"'`=,:(])(\/(?:[^/\s:"']+\/)+[^/\s:"']+)/g,
+    (_, pre, abs) => `${pre}${basename(abs)}`,
+  );
+}
+
+/**
  * Every load-failure path publishes both reports so a consumer cannot
  * read a prior success (or null) after this attempt failed. Refs #54.
- * `wasmFile` is the basename/path the loader was trying.
+ * `wasmFile` is the basename the loader was trying — never a full path.
  */
-function publishLoadError(err, { artifact, workers, wasmFile, kernel } = {}) {
-  const error = errorText(err);
+function publishLoadError(err, { artifact, workers, wasmFile, kernel, attemptedPath } = {}) {
+  const error = sanitizeReportError(err, attemptedPath);
   const wasm = wasmFile || lastWasmFile || "";
   const art =
     artifact === "threads" || artifact === "single"
@@ -230,12 +274,14 @@ function ensureWasm() {
           });
           publishThreadReport("threads", workerPool.workerCount, missingName);
           lastQmatmulKernel = qk;
+          rememberSuccess("threads", workerPool.workerCount, missingName, qk);
           api = m;
         } else {
           const m = await import(glueModule);
           await m.default({ module_or_path: bytes });
           publishThreadReport("single", 1, missingName);
           lastQmatmulKernel = qk;
+          rememberSuccess("single", 1, missingName, qk);
           api = m;
         }
         lastQ4kCalibration = applyQ4kPolicy(
@@ -250,13 +296,25 @@ function ensureWasm() {
         );
         return api;
       } catch (err) {
-        publishLoadError(err, { artifact, workers, wasmFile: missingName, kernel: qk });
+        publishLoadError(err, {
+          artifact,
+          workers,
+          wasmFile: missingName,
+          kernel: qk,
+          attemptedPath: path,
+        });
         throw err;
       }
     })();
     return wasmReady;
   } catch (err) {
-    publishLoadError(err, { artifact, workers, wasmFile: missingName, kernel: qk });
+    publishLoadError(err, {
+      artifact,
+      workers,
+      wasmFile: missingName,
+      kernel: qk,
+      attemptedPath: path,
+    });
     throw err;
   }
 }
@@ -277,20 +335,23 @@ export async function load(ggufPath) {
       artifact: lastThreadReport?.artifact,
       workers: lastThreadCount,
       wasmFile: attempted,
-      kernel: lastQmatmulKernel,
+      kernel: lastSuccessPick?.kernel ?? lastQmatmulKernel,
+      attemptedPath: path,
     });
     throw err;
   }
   try {
     const bytes = readFileSync(path);
     instance = new api.Milton(bytes);
+    republishLastSuccess();
     return instance;
   } catch (err) {
     publishLoadError(err, {
       artifact: lastThreadReport?.artifact,
       workers: lastThreadCount,
       wasmFile: attempted,
-      kernel: lastQmatmulKernel,
+      kernel: lastSuccessPick?.kernel ?? lastQmatmulKernel,
+      attemptedPath: path,
     });
     throw err;
   }
