@@ -52,6 +52,30 @@ use crate::gguf::TensorType;
 use crate::ops::matmul;
 
 pub const QK_K: usize = 256;
+
+/// Output-column split for the threaded artifact. `align` is 8 for Q4_K 8×8.
+/// Remainder columns go to the last worker. No cross-column dependency.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "wasm-threads")),
+    allow(dead_code)
+)]
+pub(crate) fn column_range(
+    n_out: usize,
+    worker: usize,
+    n_workers: usize,
+    align: usize,
+) -> (usize, usize) {
+    debug_assert!(n_workers > 0);
+    debug_assert!(align > 0);
+    let units = n_out / align;
+    let start = (worker * units / n_workers) * align;
+    let end = if worker + 1 == n_workers {
+        n_out
+    } else {
+        ((worker + 1) * units / n_workers) * align
+    };
+    (start, end)
+}
 const Q4_K_BYTES: usize = 144;
 const Q5_K_BYTES: usize = 176;
 const Q6_K_BYTES: usize = 210;
@@ -867,6 +891,11 @@ fn repack_enabled() -> bool {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+pub(crate) fn repack_live(w: &QuantMat) -> bool {
+    repack_enabled() && w.ty == TensorType::Q4K && w.q4k_8x8.is_some()
+}
+
 /// llama.cpp `make_block_q4_Kx8` (`repack.cpp`), `blck_size_interleave = 8`.
 fn make_block_q4_kx8(cols: [&[u8]; 8]) -> [u8; Q4_KX8_BYTES] {
     let mut out = [0u8; Q4_KX8_BYTES];
@@ -1396,6 +1425,12 @@ pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
             &mut qrows[t * n_blocks..(t + 1) * n_blocks],
         );
     }
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+    {
+        if crate::wasm_pool::dispatch_one(w, &qrows, n_tokens, y) {
+            return;
+        }
+    }
     let use_repack = repack_enabled() && w.ty == TensorType::Q4K && w.q4k_8x8.is_some();
     if use_repack {
         let packed = w.q4k_8x8.as_ref().unwrap();
@@ -1433,9 +1468,155 @@ pub fn matmul_ggml(x: &[f32], w: &QuantMat, n_tokens: usize, y: &mut [f32]) {
     }
 }
 
+/// FFN up + gate: one Q8_K tile, one join when the thread pool is live.
+/// Returns true if the pair ran (threaded or serial via this helper).
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+pub(crate) fn matmul_ggml_pair(
+    x: &[f32],
+    w_up: &QuantMat,
+    w_gate: &QuantMat,
+    n_tokens: usize,
+    y_up: &mut [f32],
+    y_gate: &mut [f32],
+) -> bool {
+    if w_up.n_in != w_gate.n_in || x.len() != n_tokens * w_up.n_in {
+        matmul_ggml(x, w_up, n_tokens, y_up);
+        matmul_ggml(x, w_gate, n_tokens, y_gate);
+        return true;
+    }
+    let use_q8k = q8k_enabled()
+        && matches!(w_up.ty, TensorType::Q4K | TensorType::Q5K | TensorType::Q6K)
+        && matches!(w_gate.ty, TensorType::Q4K | TensorType::Q5K | TensorType::Q6K)
+        && w_up.n_in % QK_K == 0;
+    if !use_q8k {
+        matmul_ggml(x, w_up, n_tokens, y_up);
+        matmul_ggml(x, w_gate, n_tokens, y_gate);
+        return true;
+    }
+    let n_blocks = w_up.n_in / QK_K;
+    let mut qrows = vec![
+        BlockQ8K {
+            d: 0.0,
+            qs: [0; QK_K],
+            bsums: [0; QK_K / 16],
+        };
+        n_tokens * n_blocks
+    ];
+    for t in 0..n_tokens {
+        quantize_row_q8_k(
+            &x[t * w_up.n_in..(t + 1) * w_up.n_in],
+            &mut qrows[t * n_blocks..(t + 1) * n_blocks],
+        );
+    }
+    if crate::wasm_pool::dispatch_pair(w_up, w_gate, &qrows, n_tokens, y_up, y_gate) {
+        return true;
+    }
+    matmul_ggml_from_qrows(w_up, &qrows, n_tokens, y_up);
+    matmul_ggml_from_qrows(w_gate, &qrows, n_tokens, y_gate);
+    true
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+fn matmul_ggml_from_qrows(w: &QuantMat, qrows: &[BlockQ8K], n_tokens: usize, y: &mut [f32]) {
+    matmul_ggml_cols(
+        w.ty,
+        repack_live(w),
+        if repack_live(w) {
+            w.q4k_8x8.as_ref().map(|p| p.as_slice()).unwrap_or(&w.bytes)
+        } else {
+            &w.bytes
+        },
+        qrows,
+        n_tokens,
+        w.n_in,
+        w.n_out,
+        w.n_in / QK_K,
+        y,
+        0,
+        w.n_out,
+    );
+}
+
+/// Column-range gemm on a pre-quantized Q8_K tile. Worker path: no alloc.
+/// Per-column arithmetic is the same tree as `matmul_ggml`.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+pub(crate) fn matmul_ggml_cols(
+    ty: TensorType,
+    use_repack: bool,
+    w_bytes: &[u8],
+    qrows: &[BlockQ8K],
+    n_tokens: usize,
+    n_in: usize,
+    n_out: usize,
+    n_blocks: usize,
+    y: &mut [f32],
+    col_start: usize,
+    col_end: usize,
+) {
+    debug_assert!(col_start <= col_end && col_end <= n_out);
+    debug_assert_eq!(qrows.len(), n_tokens * n_blocks);
+    debug_assert_eq!(y.len(), n_tokens * n_out);
+    if col_start >= col_end {
+        return;
+    }
+    if use_repack && ty == TensorType::Q4K {
+        crate::qmatmul_simd128::gemm_q4_k_8x8_q8_k_cols(
+            w_bytes, qrows, n_tokens, n_out, y, col_start, col_end,
+        );
+        return;
+    }
+    let cb = col_bytes(ty, n_in);
+    let mut col_out = [0.0f32; GEMM_TILE_TOKENS];
+    for t0 in (0..n_tokens).step_by(GEMM_TILE_TOKENS) {
+        let tn = (n_tokens - t0).min(GEMM_TILE_TOKENS);
+        let tile_rows = &qrows[t0 * n_blocks..(t0 + tn) * n_blocks];
+        for o in col_start..col_end {
+            let col = &w_bytes[o * cb..(o + 1) * cb];
+            match ty {
+                TensorType::Q4K => {
+                    vec_dot_q4_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_out)
+                }
+                TensorType::Q5K => {
+                    vec_dot_q5_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_out)
+                }
+                TensorType::Q6K => {
+                    vec_dot_q6_k_q8_k_tile(col, tile_rows, tn, n_blocks, &mut col_out)
+                }
+                _ => return,
+            }
+            for ti in 0..tn {
+                y[(t0 + ti) * n_out + o] = col_out[ti];
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_range_w4_nomic_sites_are_disjoint_and_cover() {
+        let sites = [(2304, 1), (768, 8), (3072, 8), (768, 8)];
+        for (n_out, align) in sites {
+            let mut covered = 0usize;
+            let mut prev = 0usize;
+            for w in 0..4 {
+                let (a, b) = column_range(n_out, w, 4, align);
+                assert_eq!(a, prev);
+                assert_eq!(a % align, 0);
+                if w + 1 < 4 {
+                    assert_eq!(b % align, 0);
+                }
+                assert!(b > a);
+                covered += b - a;
+                prev = b;
+            }
+            assert_eq!(covered, n_out);
+            assert_eq!(prev, n_out);
+        }
+        assert_eq!(column_range(768, 0, 1, 8), (0, 768));
+    }
 
     #[test]
     fn nearest_int_matches_magic() {

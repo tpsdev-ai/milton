@@ -350,8 +350,7 @@ impl Model {
 
             match &layer.ffn_gate {
                 Some(gate_w) => {
-                    matmul_ggml(&x, &layer.ffn_up, n_tok, &mut ffn_up);
-                    matmul_ggml(&x, gate_w, n_tok, &mut ffn_gate);
+                    matmul_up_gate(&x, &layer.ffn_up, gate_w, n_tok, &mut ffn_up, &mut ffn_gate);
                     dump_stage(&format!("ffn_up-{li}"), &ffn_up);
                     dump_stage(&format!("ffn_gate-{li}"), &ffn_gate);
                     let swap = matches!(variant, ForwardVariant::SwapSwiglu);
@@ -423,6 +422,26 @@ fn forward_variant() -> ForwardVariant {
         "qkv_interleaved" => ForwardVariant::QkvInterleaved,
         _ => ForwardVariant::Baseline,
     }
+}
+
+/// Sites 3+4 share the same `x` and write disjoint buffers. One join when
+/// the threaded pool is live; two serial `matmul_ggml` otherwise.
+fn matmul_up_gate(
+    x: &[f32],
+    up: &crate::qmatmul::QuantMat,
+    gate: &crate::qmatmul::QuantMat,
+    n_tok: usize,
+    ffn_up: &mut [f32],
+    ffn_gate: &mut [f32],
+) {
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+    {
+        if crate::qmatmul::matmul_ggml_pair(x, up, gate, n_tok, ffn_up, ffn_gate) {
+            return;
+        }
+    }
+    matmul_ggml(x, up, n_tok, ffn_up);
+    matmul_ggml(x, gate, n_tok, ffn_gate);
 }
 
 fn split_qkv(

@@ -61,7 +61,7 @@ jobs:
 
   wasm:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-ci
@@ -71,16 +71,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/committed-wasm"
-          cp wasm/milton_bg.wasm "$RUNNER_TEMP/committed-wasm/milton_bg.wasm"
-          cp wasm/milton.js "$RUNNER_TEMP/committed-wasm/milton.js"
-          sha256sum "$RUNNER_TEMP/committed-wasm/milton_bg.wasm" "$RUNNER_TEMP/committed-wasm/milton.js"
+          for f in milton_bg.wasm milton.js milton_threads_bg.wasm milton_threads.js; do
+            cp "wasm/$f" "$RUNNER_TEMP/committed-wasm/$f"
+          done
+          sha256sum "$RUNNER_TEMP/committed-wasm/"*
       - name: wasm:build
         run: npm run wasm:build
       - name: Upload rebuilt wasm (CI is the build of record)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: milton_bg.wasm
-          path: wasm/milton_bg.wasm
+          path: |
+            wasm/milton_bg.wasm
+            wasm/milton_threads_bg.wasm
           if-no-files-found: error
           retention-days: 14
       - name: Section-table diff (wasm-objdump)
@@ -92,12 +95,15 @@ jobs:
           bash scripts/ci/wasm-section-diff.sh \
             "$RUNNER_TEMP/committed-wasm/milton_bg.wasm" \
             wasm/milton_bg.wasm
+          bash scripts/ci/wasm-section-diff.sh \
+            "$RUNNER_TEMP/committed-wasm/milton_threads_bg.wasm" \
+            wasm/milton_threads_bg.wasm
       - name: Byte-compare rebuilt wasm vs committed
         id: wasm-bytes
         run: |
           set -euo pipefail
           match=true
-          for f in milton_bg.wasm milton.js; do
+          for f in milton_bg.wasm milton.js milton_threads_bg.wasm milton_threads.js; do
             echo "committed $(sha256sum "$RUNNER_TEMP/committed-wasm/$f")"
             echo "rebuilt   $(sha256sum "wasm/$f")"
             if ! cmp -s "$RUNNER_TEMP/committed-wasm/$f" "wasm/$f"; then
@@ -124,12 +130,14 @@ jobs:
         run: npm run wasm:gate
       - name: wasm:must-fail
         run: npm run wasm:must-fail
+      - name: SAB-absent loader picks single-thread (not an error)
+        run: npm run wasm:sab-absent
       - name: footprint (zero_native_in_wasm + size)
         run: npm run harness:footprint
       - name: Fail if wasm is not byte-reproducible
         if: steps.wasm-bytes.outputs.match != 'true'
         run: |
-          echo "fail-closed: byte-compare vs committed wasm/milton_bg.wasm + wasm/milton.js failed" >&2
+          echo "fail-closed: byte-compare vs committed wasm/{milton,milton_threads}_{bg.wasm,js} failed" >&2
           exit 1
 
   wasm-compare:
@@ -157,3 +165,5 @@ jobs:
         run: npm run wasm:compare:q4k-bprime
       - name: wasm:compare must-fire (rope-libm-sin)
         run: npm run wasm:compare:libm-sin-must-fire
+      - name: wasm:compare:threads (tight max_abs=0)
+        run: npm run wasm:compare:threads

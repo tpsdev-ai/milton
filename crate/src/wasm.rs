@@ -100,6 +100,33 @@ pub fn q4k_run_bprime(n_tokens: u32) {
     crate::qmatmul_simd128::q4k_run_bprime(n_tokens);
 }
 
+#[cfg(feature = "wasm-threads")]
+#[wasm_bindgen(js_name = wasmMemory)]
+pub fn wasm_memory() -> JsValue {
+    wasm_bindgen::memory()
+}
+
+/// Threaded artifact only. JS starts `W` `worker_threads` then calls this.
+/// `W=1` keeps the serial `matmul_ggml` path inside the shared-memory module.
+#[cfg(feature = "wasm-threads")]
+#[wasm_bindgen(js_name = miltonSetWorkers)]
+pub fn milton_set_workers(n: u32) {
+    crate::wasm_pool::set_workers(n);
+}
+
+#[cfg(feature = "wasm-threads")]
+#[wasm_bindgen(js_name = miltonWorkerCount)]
+pub fn milton_worker_count() -> u32 {
+    crate::wasm_pool::worker_count()
+}
+
+/// Worker entry: never returns. Parks on the shared epoch.
+#[cfg(feature = "wasm-threads")]
+#[wasm_bindgen(js_name = miltonWorkerEnter)]
+pub fn milton_worker_enter(id: u32) {
+    crate::wasm_pool::worker_enter(id);
+}
+
 #[cfg(feature = "profile")]
 #[wasm_bindgen]
 impl Milton {

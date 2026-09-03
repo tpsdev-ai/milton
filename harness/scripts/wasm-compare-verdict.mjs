@@ -128,6 +128,7 @@ export function main(argv) {
     const env = { ...process.env };
     delete env.MILTON_ROPE_LIBM_SIN;
     delete env.MILTON_EMBED_BIN;
+    env.MILTON_WASM_THREADS = env.MILTON_WASM_THREADS || "0";
     const ran = spawnSync(process.execPath, [COMPARE], {
       cwd: ROOT,
       encoding: "utf8",
