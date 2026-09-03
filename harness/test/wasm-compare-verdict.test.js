@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { judge, loadExpected } from "../scripts/wasm-compare-verdict.mjs";
+import { checkReceiptShape, judge, loadExpected } from "../scripts/wasm-compare-verdict.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_PATH = join(HERE, "..", "expected.json");
@@ -66,5 +66,32 @@ describe("wasm-compare two-way expected-outcome (flair#1468 shape)", () => {
       () => loadExpected(JSON.stringify({ expected: "maybe", reason: "x" })),
       /pass" or "fail/,
     );
+  });
+
+  it("threaded receipt shape requires artifact=threads, wasm_threads=4, max_abs=0, kernel", () => {
+    const ok = {
+      wasm_artifact: "threads",
+      wasm_threads: 4,
+      max_abs: 0,
+      qmatmul_kernel: { kernel: "relaxed", probe: true, forced: false },
+    };
+    assert.deepEqual(
+      checkReceiptShape(ok, { artifact: "threads", threads: 4, kernel: "relaxed", maxAbs: 0 }),
+      [],
+    );
+    const misses = checkReceiptShape(
+      {
+        wasm_artifact: "single",
+        wasm_threads: 1,
+        max_abs: 0.006,
+        qmatmul_kernel: { kernel: "simd128", probe: true, forced: false },
+      },
+      { artifact: "threads", threads: 4, kernel: "relaxed", maxAbs: 0 },
+    );
+    assert.equal(misses.length, 4);
+    assert.match(misses.join("\n"), /wasm_artifact expected threads/);
+    assert.match(misses.join("\n"), /wasm_threads expected 4/);
+    assert.match(misses.join("\n"), /qmatmul_kernel.kernel expected relaxed/);
+    assert.match(misses.join("\n"), /max_abs expected 0/);
   });
 });

@@ -179,12 +179,12 @@ jobs:
         run: npm run wasm:compare:q4k-bprime
       - name: wasm:compare must-fire (rope-libm-sin)
         run: npm run wasm:compare:libm-sin-must-fire
-      - name: wasm:compare:threads (auto → threads-relaxed on Node ≥22)
-        run: npm run wasm:compare:threads
-      - name: wasm:compare threads simd128 fallback (MILTON_RELAXED_SIMD=0)
-        run: npm run wasm:compare:threads:simd128
-      - name: wasm:compare threads forced-relaxed
-        run: npm run wasm:compare:threads:relaxed
+      - name: wasm:compare-verdict:threads (auto → threads-relaxed)
+        run: npm run wasm:compare-verdict:threads
+      - name: wasm:compare-verdict threads simd128 fallback (MILTON_RELAXED_SIMD=0)
+        run: npm run wasm:compare-verdict:threads:simd128
+      - name: wasm:compare-verdict threads forced-relaxed
+        run: npm run wasm:compare-verdict:threads:relaxed
 
   wasm-compare-node26:
     runs-on: ubuntu-latest
@@ -197,11 +197,13 @@ jobs:
           node-version: "26"
       - name: Build native milton-embed (AVX2 path)
         run: cargo build --manifest-path crate/Cargo.toml --release --bin milton-embed
-      - name: wasm:compare on Node 26 (auto → relaxed)
-        run: npm run wasm:compare
+      - name: wasm:compare-verdict on Node 26 (auto → single relaxed)
+        run: npm run wasm:compare-verdict
       - name: wasm:compare simd128 fallback on Node 26
         run: npm run wasm:compare:simd128
-      - name: wasm:compare threads-relaxed on Node 26
-        run: npm run wasm:compare:threads
-      - name: wasm:compare threads simd128 fallback on Node 26
-        run: npm run wasm:compare:threads:simd128
+      - name: wasm:compare-verdict:threads on Node 26 (auto → threads-relaxed)
+        run: npm run wasm:compare-verdict:threads
+      - name: wasm:compare-verdict threads simd128 fallback on Node 26
+        run: npm run wasm:compare-verdict:threads:simd128
+      - name: wasm:compare-verdict threads forced-relaxed on Node 26
+        run: npm run wasm:compare-verdict:threads:relaxed

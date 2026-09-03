@@ -45,6 +45,36 @@ export function loadExpected(raw, source = "expected.json") {
 }
 
 /**
+ * Tight-lane shape (Flint #53 ASK 2). Threaded verdicts must show
+ * artifact=threads, wasm_threads=4, max_abs=0, and the expected kernel.
+ * @param {object} receipt
+ * @param {{ artifact?: "single" | "threads", threads?: number, kernel?: "relaxed" | "simd128", maxAbs?: number }} want
+ * @returns {string[]}
+ */
+export function checkReceiptShape(receipt, want) {
+  const misses = [];
+  if (!receipt || typeof receipt !== "object") {
+    return ["receipt is missing or not an object"];
+  }
+  if (want.artifact && receipt.wasm_artifact !== want.artifact) {
+    misses.push(`wasm_artifact expected ${want.artifact} got ${JSON.stringify(receipt.wasm_artifact)}`);
+  }
+  if (want.threads != null && receipt.wasm_threads !== want.threads) {
+    misses.push(`wasm_threads expected ${want.threads} got ${JSON.stringify(receipt.wasm_threads)}`);
+  }
+  if (want.kernel) {
+    const got = receipt.qmatmul_kernel?.kernel;
+    if (got !== want.kernel) {
+      misses.push(`qmatmul_kernel.kernel expected ${want.kernel} got ${JSON.stringify(got)}`);
+    }
+  }
+  if (want.maxAbs != null && receipt.max_abs !== want.maxAbs) {
+    misses.push(`max_abs expected ${want.maxAbs} got ${JSON.stringify(receipt.max_abs)}`);
+  }
+  return misses;
+}
+
+/**
  * @param {{ expected: "pass" | "fail", observed: "pass" | "fail" | "abort", reason: string }} args
  * @returns {{ ok: boolean, summary: string }}
  */
@@ -82,13 +112,38 @@ export function judge({ expected, observed, reason }) {
 }
 
 function parseArgs(argv) {
-  const out = { expected: DEFAULT_EXPECTED, help: false, skipRun: false };
+  const out = {
+    expected: DEFAULT_EXPECTED,
+    help: false,
+    skipRun: false,
+    artifact: null,
+    threads: null,
+    kernel: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") out.help = true;
     else if (arg === "--expected") out.expected = argv[++i] ?? null;
     else if (arg === "--skip-run") out.skipRun = true;
-    else throw new Error(`unknown argument: ${arg}`);
+    else if (arg === "--artifact") {
+      const v = argv[++i];
+      if (v !== "single" && v !== "threads") {
+        throw new Error(`--artifact must be single or threads, got ${JSON.stringify(v)}`);
+      }
+      out.artifact = v;
+    } else if (arg === "--threads") {
+      const n = Number(argv[++i]);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`--threads must be a positive integer, got ${JSON.stringify(argv[i])}`);
+      }
+      out.threads = n;
+    } else if (arg === "--kernel") {
+      const v = argv[++i];
+      if (v !== "relaxed" && v !== "simd128") {
+        throw new Error(`--kernel must be relaxed or simd128, got ${JSON.stringify(v)}`);
+      }
+      out.kernel = v;
+    } else throw new Error(`unknown argument: ${arg}`);
   }
   return out;
 }
@@ -107,7 +162,7 @@ export function main(argv) {
   }
   if (args.help) {
     process.stdout.write(
-      "Usage: node harness/scripts/wasm-compare-verdict.mjs [--expected FILE]\n",
+      "Usage: node harness/scripts/wasm-compare-verdict.mjs [--expected FILE] [--artifact single|threads] [--threads N] [--kernel relaxed|simd128]\n",
     );
     return 0;
   }
@@ -128,7 +183,17 @@ export function main(argv) {
     const env = { ...process.env };
     delete env.MILTON_ROPE_LIBM_SIN;
     delete env.MILTON_EMBED_BIN;
-    env.MILTON_WASM_THREADS = env.MILTON_WASM_THREADS || "0";
+    // Single-thread lane sets MILTON_WASM_THREADS=0 in the npm script.
+    // Threaded verdicts must not inherit that default — the product path
+    // is auto threads on a 4-vCPU runner (Flint #53 ASK 2).
+    if (args.artifact === "threads") {
+      delete env.MILTON_WASM_THREADS;
+      if (env.MILTON_THREADS === undefined || env.MILTON_THREADS === "") {
+        env.MILTON_THREADS = args.threads != null ? String(args.threads) : "4";
+      }
+    } else if (env.MILTON_WASM_THREADS === undefined) {
+      env.MILTON_WASM_THREADS = "0";
+    }
     const ran = spawnSync(process.execPath, [COMPARE], {
       cwd: ROOT,
       encoding: "utf8",
@@ -149,14 +214,16 @@ export function main(argv) {
   }
 
   let observed = "abort";
+  let receipt = null;
   if (existsSync(RECEIPT)) {
     try {
-      const receipt = JSON.parse(readFileSync(RECEIPT, "utf8"));
+      receipt = JSON.parse(readFileSync(RECEIPT, "utf8"));
       if (receipt.result === "pass" || receipt.result === "fail") {
         observed = receipt.result;
       }
     } catch {
       observed = "abort";
+      receipt = null;
     }
   }
 
@@ -165,11 +232,31 @@ export function main(argv) {
     observed,
     reason: expectedDoc.reason,
   });
+  const want = {
+    artifact: args.artifact,
+    threads: args.threads,
+    kernel: args.kernel,
+    maxAbs: args.artifact || args.kernel || args.threads != null ? 0 : null,
+  };
+  const shapeMisses = receipt
+    ? checkReceiptShape(receipt, want)
+    : args.artifact || args.kernel || args.threads != null
+      ? ["receipt missing; cannot check artifact/threads/kernel/max_abs"]
+      : [];
+
   process.stdout.write("==============================================\n");
   process.stdout.write(`${verdict.summary}\n`);
   process.stdout.write(`observed=${observed} expected=${expectedDoc.expected}\n`);
+  if (receipt) {
+    process.stdout.write(
+      `wasm_artifact=${JSON.stringify(receipt.wasm_artifact)} wasm_threads=${JSON.stringify(receipt.wasm_threads)} max_abs=${JSON.stringify(receipt.max_abs)} qmatmul_kernel=${JSON.stringify(receipt.qmatmul_kernel)}\n`,
+    );
+  }
+  if (shapeMisses.length) {
+    process.stdout.write(`RED: receipt shape: ${shapeMisses.join("; ")}\n`);
+  }
   process.stdout.write("==============================================\n");
-  return verdict.ok ? 0 : 1;
+  return verdict.ok && shapeMisses.length === 0 ? 0 : 1;
 }
 
 const isMain =

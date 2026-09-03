@@ -48,6 +48,20 @@ This sandbox's Node 22.14 has no `--no-wasm-relaxed-simd` (the V8 flag
 is gone once relaxed SIMD is default-on). The named fallback compare
 lane is `npm run wasm:compare:simd128` (`MILTON_RELAXED_SIMD=0`).
 
+Tight bit-exact verdict (`wasm:compare-verdict`) runs on **both**
+artifacts in `wasm-compare` (Node 22) and `wasm-compare-node26`:
+
+| npm script | artifact | `wasm_threads` | kernel |
+|---|---|---:|---|
+| `wasm:compare-verdict` | `single` | 1 | `relaxed` |
+| `wasm:compare-verdict:threads` | `threads` | 4 | `relaxed` |
+| `wasm:compare-verdict:threads:simd128` | `threads` | 4 | `simd128` |
+| `wasm:compare-verdict:threads:relaxed` | `threads` | 4 | `relaxed` |
+
+Each verdict is RED unless the receipt reports that shape **and**
+`max_abs=0`. Do not let a `MILTON_WASM_THREADS=0` compare stand in for
+the product path.
+
 Q6_K stays on the base SIMD128 kernel because of its −32 reconstruction
 offset, not because 0..63 is out of i7 range (`63 = 0x3F`).
 
@@ -72,14 +86,11 @@ are CI's rebuilt blobs from that run's `milton_bg.wasm` artifact:
 | `milton_bg.wasm` | `836fab097009f110e2bd53928a1aac74d275b16350c7cc021456422241a08a1a` | 636581 |
 | `milton_relaxed_bg.wasm` | `f7750b2635bd8bc9e86226828bb0658862ad11274e38b5850f4b23587564caa9` | 638171 |
 | `milton_threads_bg.wasm` | `ccad4d27f7e7def502d74a4ead55ad85c86ccb14e556e9d9f948be85279cc884` | 619768 |
+| `milton_threads_relaxed_bg.wasm` | `d31d3b5c8708c67393205bb13add5fac3f1c3569b2d4e9a550188cfd7da13d36` | 620820 |
 
-Local vs that CI rebuild: `milton_relaxed_bg.wasm` was already
-byte-identical. `milton_bg.wasm` Data +240 / Code −2 (dirty
-`crate/target` incremental from the profile pass, not a source
-delta). `milton_threads_bg.wasm` section sizes identical, hash
-differs (`-Z build-std` `::hXXXX`). Glue (`milton.js` /
-`milton_relaxed.js` / `milton_threads.js`) matched. Next CI
-rebuild on ubuntu-latest is expected to match these hashes.
+`milton_threads_relaxed_bg.wasm` is new in the threads-relaxed fix (`bc35f6b`).
+CI run `33777431688` is the build of record for both threaded blobs.
+Glue (`milton_threads.js` / `milton_threads_relaxed.js`) is byte-identical.
 
 ## How the wasm is produced (builder-side only)
 
