@@ -6,9 +6,10 @@
  * are `search_document: ` / `search_query: ` / passthrough (load-bearing space).
  *
  * Two artifacts, one loader (Refs #44). The shared-memory module is used
- * only when SharedArrayBuffer + Atomics exist and WebAssembly.validate
- * accepts a shared-memory probe. Absence of SAB is the ordinary path —
- * `wasm/milton_bg.wasm` — not an error.
+ * only when SharedArrayBuffer + Atomics exist, WebAssembly.validate
+ * accepts a shared-memory probe, and the pool would be larger than 1.
+ * `MILTON_THREADS=1` forces `wasm/milton_bg.wasm` (not threads-with-W=1).
+ * Absence of SAB is the ordinary path — not an error.
  *
  * Fail-closed: missing prebuilt wasm, missing GGUF, or an unverified path
  * refuses. No native compile and no per-platform build at install.
@@ -21,7 +22,9 @@ import { fileURLToPath } from "node:url";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
 import {
   canUseWasmThreads,
+  hostParallelism,
   resolveThreadCount,
+  sabAvailable,
   startWorkerPool,
 } from "./wasm-threads.js";
 
@@ -74,13 +77,32 @@ let workerPool = null;
 /** Last load-time Q4_K calibration (or forced-variant) report. */
 export let lastQ4kCalibration = null;
 
-/** `'single' | 'threads'` — which prebuilt artifact the loader picked. */
+/**
+ * Loader path report (Flint #50 ASK). Same grain as `lastQ4kCalibration`.
+ * `sabAvailable` is the capability probe, not "did we pick threads" —
+ * `MILTON_THREADS=1` on a SAB host is `{artifact:'single', workers:1, sabAvailable:true}`.
+ * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean } | null}
+ */
+export let lastThreadReport = null;
+
+/** `'single' | 'threads'` — alias of `lastThreadReport.artifact`. */
 export let lastWasmArtifact = null;
 
 /** Pool size after load. `1` on the single-thread artifact. */
 export let lastThreadCount = 1;
 
-export { canUseWasmThreads, resolveThreadCount };
+export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
+
+function publishThreadReport(artifact, workers) {
+  lastThreadReport = {
+    artifact,
+    workers,
+    availableParallelism: hostParallelism(),
+    sabAvailable: sabAvailable(),
+  };
+  lastWasmArtifact = artifact;
+  lastThreadCount = workers;
+}
 
 function ensureWasm() {
   if (wasmReady) return wasmReady;
@@ -106,14 +128,12 @@ function ensureWasm() {
         workerCount: n,
         miltonSetWorkers: m.miltonSetWorkers,
       });
-      lastWasmArtifact = "threads";
-      lastThreadCount = workerPool.workerCount;
+      publishThreadReport("threads", workerPool.workerCount);
       api = m;
     } else {
       const m = await import("../wasm/milton.js");
       await m.default({ module_or_path: bytes });
-      lastWasmArtifact = "single";
-      lastThreadCount = 1;
+      publishThreadReport("single", 1);
       api = m;
     }
     lastQ4kCalibration = applyQ4kPolicy(

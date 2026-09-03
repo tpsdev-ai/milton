@@ -23,12 +23,23 @@ if (milton.lastThreadCount !== 1) {
   console.error(`fail-closed: lastThreadCount=${milton.lastThreadCount}, want 1`);
   process.exit(1);
 }
+const report = milton.lastThreadReport;
+if (
+  !report ||
+  report.artifact !== "single" ||
+  report.workers !== 1 ||
+  report.sabAvailable !== false
+) {
+  console.error(`fail-closed: lastThreadReport=${JSON.stringify(report)}`);
+  process.exit(1);
+}
 
 process.stdout.write(
   JSON.stringify({
     result: "pass",
     artifact: milton.lastWasmArtifact,
     threads: milton.lastThreadCount,
+    report,
     dims: vec.length,
     note: "SAB absent is the ordinary path; single-thread module loaded; not an error",
   }) + "\n",

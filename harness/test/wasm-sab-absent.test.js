@@ -21,6 +21,11 @@ describe("SAB-absent loader", () => {
     assert.equal(canUseWasmThreads({ MILTON_WASM_THREADS: "0" }, globalThis), false);
   });
 
+  it("MILTON_THREADS=1 forces the single-thread artifact even if SAB exists", () => {
+    assert.equal(canUseWasmThreads({ MILTON_THREADS: "1" }, globalThis), false);
+    assert.equal(canUseWasmThreads({ MILTON_THREADS: "0" }, globalThis), false);
+  });
+
   it("default thread count is min(4, cores) and at least 1", () => {
     const n = resolveThreadCount({});
     assert.ok(n >= 1 && n <= 4);

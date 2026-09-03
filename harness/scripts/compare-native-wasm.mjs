@@ -11,7 +11,12 @@ import { loadCorpus } from "../lib/corpus.js";
 import { loadEpsilon } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
 import { createNativeEmbedder } from "../lib/milton-native.js";
-import { embed as wasmEmbed, lastThreadCount, lastWasmArtifact } from "../../src/index.js";
+import {
+  embed as wasmEmbed,
+  lastThreadCount,
+  lastThreadReport,
+  lastWasmArtifact,
+} from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "../..");
@@ -91,6 +96,7 @@ const receipt = {
   epsilon_abs: eps.epsilon_abs,
   wasm_artifact: lastWasmArtifact,
   wasm_threads: lastThreadCount,
+  thread_report: lastThreadReport,
   tight_max_abs: tight ? { expected: 0, got: maxAbs, pass: maxAbs === 0 } : null,
   note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten.",
   cases: rows,

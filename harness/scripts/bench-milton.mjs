@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { loadCorpus } from "../lib/corpus.js";
-import { lastQ4kCalibration, resolveGguf } from "../../src/index.js";
+import { lastQ4kCalibration, lastThreadReport, resolveGguf } from "../../src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "../..");
@@ -139,6 +139,7 @@ const receipt = {
     single_thread: baseline.single_thread ?? null,
   },
   q4k_calibration: lastQ4kCalibration,
+  thread_report: lastThreadReport,
   flint_addendum: flintInterpretation(
     (singleCases.length / singleMs) * 1000,
     (batchedN / batchedMs) * 1000,

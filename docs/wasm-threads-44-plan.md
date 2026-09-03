@@ -191,9 +191,12 @@ dispatch) — not waved, not "widen the held".
   probe. Absence of SAB is the ordinary path, not an error.
 - Both rebuilt by the remapped `scripts/build-wasm.sh` and
   byte-compared in CI. Second compare lane `wasm:compare:threads`
-  (tight `max_abs=0`). `MILTON_THREADS=0` / SAB-absent forces the
-  single-thread artifact so the existing compare lane stays honest
-  on Node (where SAB exists).
+  (tight `max_abs=0`). `MILTON_THREADS=1` forces the single-thread
+  artifact (`milton_bg.wasm`), not threads-with-W=1. `MILTON_THREADS=<n>`
+  sizes the pool when the threads artifact is selected. SAB-absent and
+  `MILTON_WASM_THREADS=0` also pick single so the existing compare lane
+  stays honest on Node (where SAB exists). `lastThreadReport` records
+  `{artifact, workers, availableParallelism, sabAvailable}`.
 
 Native AVX2 stays where #40/#49 left it. No relaxed-simd (#43). No
 further kernel letters. Product is WASM. v1 CPU-portable.

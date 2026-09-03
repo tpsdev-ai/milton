@@ -21,8 +21,21 @@ const SHARED_MEMORY_PROBE = new Uint8Array([
 
 const THREAD_STACK = 2 * 1024 * 1024;
 
-export function canUseWasmThreads(env = process.env, global = globalThis) {
-  if (env.MILTON_WASM_THREADS === "0") return false;
+/** Host core count. `1` if `os.availableParallelism` is missing or ≤0. */
+export function hostParallelism() {
+  try {
+    const n = availableParallelism();
+    return n > 0 ? n : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Capability only — not a loader decision. True when SharedArrayBuffer,
+ * Atomics, and a shared-memory WebAssembly.validate probe all succeed.
+ */
+export function sabAvailable(global = globalThis) {
   if (typeof global.SharedArrayBuffer !== "function") return false;
   if (typeof global.Atomics !== "object" || global.Atomics == null) return false;
   if (typeof global.WebAssembly?.validate !== "function") return false;
@@ -33,15 +46,21 @@ export function canUseWasmThreads(env = process.env, global = globalThis) {
   }
 }
 
+/**
+ * Pick the threaded artifact only when SAB is usable AND the pool would
+ * be larger than 1. `MILTON_THREADS=1` (and `MILTON_WASM_THREADS=0`)
+ * force `wasm/milton_bg.wasm` — Flint #50 ASK so M4 forced-single vs
+ * main is the single-thread module, not threads-with-W=1.
+ */
+export function canUseWasmThreads(env = process.env, global = globalThis) {
+  if (env.MILTON_WASM_THREADS === "0") return false;
+  if (resolveThreadCount(env) <= 1) return false;
+  return sabAvailable(global);
+}
+
 /** `min(MILTON_THREADS || 4, os.availableParallelism())`, at least 1. */
 export function resolveThreadCount(env = process.env) {
-  let cores = 1;
-  try {
-    cores = availableParallelism();
-  } catch {
-    cores = 1;
-  }
-  if (!(cores > 0)) cores = 1;
+  const cores = hostParallelism();
   const raw = env.MILTON_THREADS;
   if (raw === undefined || raw === "") {
     return Math.min(4, cores);
