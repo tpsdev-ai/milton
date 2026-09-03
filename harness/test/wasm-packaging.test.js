@@ -112,13 +112,20 @@ describe("WASM-SIMD packaging", () => {
       /--remap-path-prefix=\$\{CARGO_HOME_DIR\}\/registry\/src=\/cargo\/registry\/src/,
     );
     assert.match(build, /--remap-path-prefix=\$\{ROOT\}=\/milton/);
+    assert.match(build, /--remap-path-prefix=\$\{RUSTUP_HOME_DIR\}=\/rustup/);
     const bytes = readFileSync(WASM);
     assert.ok(
       bytes.includes(Buffer.from("/cargo/registry/src")),
       "committed wasm missing remapped /cargo/registry/src",
     );
+    assert.ok(
+      bytes.includes(Buffer.from("/rustup")),
+      "committed wasm missing remapped /rustup sysroot",
+    );
     assert.equal(bytes.includes(Buffer.from("/usr/local/cargo")), false);
     assert.equal(bytes.includes(Buffer.from("/home/runner/.cargo")), false);
+    assert.equal(bytes.includes(Buffer.from("/usr/local/rustup")), false);
+    assert.equal(bytes.includes(Buffer.from("/home/runner/.rustup")), false);
   });
 
   it("public glue loads the prebuilt wasm, not a native bin", () => {

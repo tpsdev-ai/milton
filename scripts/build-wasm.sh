@@ -35,7 +35,11 @@ fi
 # Builder box is /usr/local/cargo (16 chars); GH ubuntu-latest is
 # /home/runner/.cargo (19). That 3-char prefix delta was Data +8 on CI.
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-REMAP="--remap-path-prefix=${CARGO_HOME_DIR}/registry/src=/cargo/registry/src --remap-path-prefix=${ROOT}=/milton"
+# rustup sysroot (std panic paths) is the leftover host-unstable prefix:
+# this box /usr/local/rustup (17); GH ubuntu-latest /home/runner/.rustup (20).
+# That 3-char delta was Data +24 on CI for milton_bg.wasm.
+RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
+REMAP="--remap-path-prefix=${CARGO_HOME_DIR}/registry/src=/cargo/registry/src --remap-path-prefix=${ROOT}=/milton --remap-path-prefix=${RUSTUP_HOME_DIR}=/rustup"
 
 # --- single-thread (ordinary path; no shared memory) ---
 # Do not inherit +atomics from a prior threads build / leftover env.
