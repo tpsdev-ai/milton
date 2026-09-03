@@ -10,7 +10,23 @@ Consumers do not need Rust, `wasm-pack`, or a compile step.
 | `milton_threads_bg.wasm` | same crate + `wasm-threads`, `+atomics,+bulk-memory`, **shared** memory import |
 | `milton_threads.js` | wasm-bindgen glue for the threaded artifact |
 
-The JS loader (`src/index.js`) picks the threaded module only when `SharedArrayBuffer` and `Atomics` exist and `WebAssembly.validate` accepts a shared-memory probe. Absence of SAB is the ordinary path, not an error. A shared-memory module cannot instantiate where SAB is absent — that is why there are two artifacts.
+The JS loader (`src/index.js`) picks the threaded module only when
+`SharedArrayBuffer` + `Atomics` exist, `WebAssembly.validate` accepts a
+shared-memory probe, **and** the pool would be larger than 1.
+`MILTON_THREADS=1` forces `milton_bg.wasm` (not threads-with-W=1).
+`MILTON_THREADS=<n>` sizes the pool when the threads artifact is selected.
+`lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable}`
+after load (`sabAvailable` is the capability probe, not the pick).
+Absence of SAB is the ordinary path, not an error. A shared-memory module
+cannot instantiate where SAB is absent — that is why there are two artifacts.
+
+`milton_threads_bg.wasm` is **reproducible only from CI**. The threads
+build uses `-Z build-std`, so crate-hash suffixes (`::hXXXX` in the name
+section) follow the rust-src host path even after `--remap-path-prefix`.
+A local `npm run wasm:build` is expected to differ in those hashes.
+CI is the build of record: do not replace a CI-matching blob with a
+local rebuild unless the CI byte-compare is red and you are committing
+CI's own output.
 
 ## How the wasm is produced (builder-side only)
 
