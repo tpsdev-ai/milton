@@ -56,9 +56,26 @@ local rebuild unless the CI byte-compare is red and you are committing
 CI's own output.
 
 `milton_bg.wasm` and `milton_relaxed_bg.wasm` do not use `build-std`.
-If a local rebuild of either ever diverges from CI at identical section
-sizes (the #50 lesson), CI is still the build of record — document the
-delta here rather than fighting the hash. Do not weaken the byte-compare.
+If a local rebuild of either ever diverges from CI (the #50 lesson),
+CI is still the build of record — document the delta here rather than
+fighting the hash. Do not weaken the byte-compare.
+
+#43 run `33774688123` (HEAD `e2af574`) was that case. Committed here
+are CI's rebuilt blobs from that run's `milton_bg.wasm` artifact:
+
+| artifact | sha256 | bytes |
+|---|---|---:|
+| `milton_bg.wasm` | `836fab097009f110e2bd53928a1aac74d275b16350c7cc021456422241a08a1a` | 636581 |
+| `milton_relaxed_bg.wasm` | `f7750b2635bd8bc9e86226828bb0658862ad11274e38b5850f4b23587564caa9` | 638171 |
+| `milton_threads_bg.wasm` | `ccad4d27f7e7def502d74a4ead55ad85c86ccb14e556e9d9f948be85279cc884` | 619768 |
+
+Local vs that CI rebuild: `milton_relaxed_bg.wasm` was already
+byte-identical. `milton_bg.wasm` Data +240 / Code −2 (dirty
+`crate/target` incremental from the profile pass, not a source
+delta). `milton_threads_bg.wasm` section sizes identical, hash
+differs (`-Z build-std` `::hXXXX`). Glue (`milton.js` /
+`milton_relaxed.js` / `milton_threads.js`) matched. Next CI
+rebuild on ubuntu-latest is expected to match these hashes.
 
 ## How the wasm is produced (builder-side only)
 
