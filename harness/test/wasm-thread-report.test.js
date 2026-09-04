@@ -111,11 +111,13 @@ describe("lastThreadReport + MILTON_THREADS=1", () => {
     assert.equal(got.threads, 1);
     assert.deepEqual(Object.keys(got.report).sort(), [
       "artifact",
+      "attnMinTokens",
       "availableParallelism",
       "sabAvailable",
       "wasm",
       "workers",
     ]);
+    assert.equal(got.report.attnMinTokens, 32);
     assert.equal(got.report.wasm, "milton_relaxed_bg.wasm");
     assert.equal(got.report.artifact, "single");
     assert.equal(got.report.workers, 1);
@@ -259,11 +261,13 @@ process.stdout.write(JSON.stringify({
     assert.equal(got.success.kernel.error, undefined);
     assert.deepEqual(Object.keys(got.success.thread).sort(), [
       "artifact",
+      "attnMinTokens",
       "availableParallelism",
       "sabAvailable",
       "wasm",
       "workers",
     ]);
+    assert.equal(got.success.thread.attnMinTokens, 32);
     assert.deepEqual(Object.keys(got.success.kernel).sort(), ["forced", "kernel", "probe"]);
     assert.equal(got.success.thread.wasm, "milton_relaxed_bg.wasm");
     assert.equal(got.success.kernel.kernel, "relaxed");
@@ -334,11 +338,13 @@ process.stdout.write(JSON.stringify({
     assert.equal(got.recovered.kernel.error, undefined);
     assert.deepEqual(Object.keys(got.recovered.thread).sort(), [
       "artifact",
+      "attnMinTokens",
       "availableParallelism",
       "sabAvailable",
       "wasm",
       "workers",
     ]);
+    assert.equal(got.recovered.thread.attnMinTokens, 32);
     assert.deepEqual(Object.keys(got.recovered.kernel).sort(), ["forced", "kernel", "probe"]);
     assert.equal(got.recovered.thread.wasm, "milton_relaxed_bg.wasm");
     assert.deepEqual(got.recovered.thread, got.success.thread);

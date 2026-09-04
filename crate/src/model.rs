@@ -4,6 +4,8 @@
 //! from the GGUF. Prefix templates are config. v1 verifies nomic-embed-text-v1.5
 //! only. Unverified pooling / activation / arch refuse.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::error::{Error, Result};
 use crate::gguf::GgufFile;
 use crate::meta::{
@@ -424,11 +426,38 @@ fn forward_variant() -> ForwardVariant {
     }
 }
 
-/// Below this, A2 join + dispatch exceeds serial attention on short-n
-/// (8-case corpus is n≤19). Long-n (n≈502) always takes the split.
-/// Bit-exact either way — same `attention_heads` body.
-#[allow(dead_code)] // read from the wasm-threads attention_layer / profile path
-const ATTN_PARALLEL_MIN_TOKENS: usize = 32;
+/// Default A2 serial→parallel token gate (issue #57 KVM-host literal).
+/// Host property, not a constant — JS `MILTON_ATTN_MIN_TOKENS` overrides
+/// via `set_attn_parallel_min_tokens`. Below the gate the serial path is
+/// bit-identical. Long-n (n≈502) always takes the split.
+/// Native / single-thread artifacts only read these from tests and the
+/// wasm export; the comparison itself is `#[cfg] wasm-threads`.
+#[allow(dead_code)]
+pub(crate) const ATTN_PARALLEL_MIN_TOKENS: usize = 32;
+#[allow(dead_code)]
+const ATTN_PARALLEL_MIN_TOKENS_MAX: usize = 8192;
+
+#[allow(dead_code)]
+static ATTN_MIN_TOKENS: AtomicUsize = AtomicUsize::new(ATTN_PARALLEL_MIN_TOKENS);
+
+/// Effective gate after env/default. Default is the literal 32.
+#[allow(dead_code)]
+pub(crate) fn attn_parallel_min_tokens() -> usize {
+    ATTN_MIN_TOKENS.load(Ordering::Relaxed)
+}
+
+/// Store the JS-resolved gate. Out-of-range clamps to the default 32
+/// (same fail-safe as the JS parse; never panics).
+#[allow(dead_code)]
+pub(crate) fn set_attn_parallel_min_tokens(n: u32) {
+    let n = n as usize;
+    let applied = if n < 1 || n > ATTN_PARALLEL_MIN_TOKENS_MAX {
+        ATTN_PARALLEL_MIN_TOKENS
+    } else {
+        n
+    };
+    ATTN_MIN_TOKENS.store(applied, Ordering::Relaxed);
+}
 
 /// Phase A2: head-split attention when the threaded pool is live
 /// and `n_tok` is large enough that the join is not the work.
@@ -445,7 +474,7 @@ fn attention_layer(
 ) {
     #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
     {
-        if crate::wasm_pool::pool_live() && n_tok >= ATTN_PARALLEL_MIN_TOKENS {
+        if crate::wasm_pool::pool_live() && n_tok >= attn_parallel_min_tokens() {
             let w = crate::wasm_pool::worker_count() as usize;
             let mut scores = vec![0.0f32; w * n_tok];
             if crate::wasm_pool::dispatch_attn(
@@ -557,6 +586,17 @@ fn mean_pool_skip(
     let inv = 1.0 / (end - start) as f32;
     for v in out.iter_mut() {
         *v *= inv;
+    }
+}
+
+#[cfg(test)]
+mod attn_gate_tests {
+    use super::*;
+
+    #[test]
+    fn default_gate_matches_crossover_literal() {
+        assert_eq!(ATTN_PARALLEL_MIN_TOKENS, 32);
+        assert_eq!(attn_parallel_min_tokens(), 32);
     }
 }
 

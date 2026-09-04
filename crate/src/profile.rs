@@ -351,7 +351,7 @@ impl Model {
 
             #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
             let attn_threaded =
-                crate::wasm_pool::pool_live() && n_tok >= super::ATTN_PARALLEL_MIN_TOKENS;
+                crate::wasm_pool::pool_live() && n_tok >= super::attn_parallel_min_tokens();
             #[cfg(not(all(target_arch = "wasm32", feature = "wasm-threads")))]
             let attn_threaded = false;
             if attn_threaded {

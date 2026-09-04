@@ -1,8 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ATTN_MIN_TOKENS_DEFAULT, resolveAttnMinTokens } from "../../src/attn-min-tokens.js";
 import {
   ATTN_CROSSOVER_PINS,
   COMPARE_CROSSOVER_PATH,
@@ -56,4 +58,51 @@ describe("ATTN_PARALLEL_MIN_TOKENS=32 compare crossover (#58)", () => {
     assert.equal(raw.schema, "milton.compare-crossover/1");
     assert.equal(raw.gate, 32);
   });
+
+  it("JS default and wasm getter equal fixture gate: 32 (Flint rider)", () => {
+    assert.equal(extra.gate, ATTN_MIN_TOKENS_DEFAULT);
+    assert.equal(resolveAttnMinTokens({}), extra.gate);
+    assert.equal(resolveAttnMinTokens({ MILTON_ATTN_MIN_TOKENS: "" }), extra.gate);
+    const got = runAttnGate({});
+    assert.equal(got.resolved, extra.gate);
+    assert.equal(got.applied, extra.gate);
+    assert.equal(got.wasm, extra.gate);
+  });
+
+  it("MILTON_ATTN_MIN_TOKENS overrides the effective wasm gate", () => {
+    const got = runAttnGate({ MILTON_ATTN_MIN_TOKENS: "64" });
+    assert.equal(got.resolved, 64);
+    assert.equal(got.applied, 64);
+    assert.equal(got.wasm, 64);
+  });
 });
+
+function runAttnGate(env) {
+  const ROOT = join(HERE, "../..");
+  const SRC = join(ROOT, "src", "attn-min-tokens.js");
+  const GLUE = join(ROOT, "wasm", "milton_relaxed.js");
+  const WASM = join(ROOT, "wasm", "milton_relaxed_bg.wasm");
+  const ran = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `import { readFileSync } from "node:fs";
+import { applyAttnMinTokens, resolveAttnMinTokens } from ${JSON.stringify(SRC)};
+import init, { attnMinTokens, attnSetMinTokens } from ${JSON.stringify(GLUE)};
+await init({ module_or_path: readFileSync(${JSON.stringify(WASM)}) });
+const applied = applyAttnMinTokens({ attnSetMinTokens, attnMinTokens });
+process.stdout.write(JSON.stringify({
+  resolved: resolveAttnMinTokens(),
+  applied,
+  wasm: attnMinTokens(),
+}));`,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+      env: { ...process.env, ...env },
+    },
+  );
+  assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+  return JSON.parse(ran.stdout);
+}

@@ -27,6 +27,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyAttnMinTokens, resolveAttnMinTokens } from "./attn-min-tokens.js";
 import { applyQ4kPolicy } from "./q4k-calibrate.js";
 import { resolveQmatmulKernel } from "./relaxed-simd.js";
 import {
@@ -106,7 +107,10 @@ export let lastWasmFile = null;
  * `wasm` is the basename actually instantiated (proves the four-way pick).
  * On a failed load, the same grain is published with `error` (string) and
  * `wasm` set to the artifact that was attempted — never a prior success.
- * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string, error?: string } | null}
+ * `attnMinTokens` is the effective A2 serial→parallel gate after
+ * `MILTON_ATTN_MIN_TOKENS` / default 32 (issue #59). Same grain so a
+ * paired bench and the crossover fixture can see which value ran.
+ * @type {{ artifact: 'single' | 'threads', workers: number, availableParallelism: number, sabAvailable: boolean, wasm: string, attnMinTokens: number, error?: string } | null}
  */
 export let lastThreadReport = null;
 
@@ -126,12 +130,18 @@ export let lastThreadCount = 1;
  */
 export let lastQmatmulKernel = null;
 
-export { canUseWasmThreads, hostParallelism, resolveThreadCount, sabAvailable };
+export {
+  canUseWasmThreads,
+  hostParallelism,
+  resolveThreadCount,
+  sabAvailable,
+};
+export { applyAttnMinTokens, resolveAttnMinTokens, ATTN_MIN_TOKENS_DEFAULT } from "./attn-min-tokens.js";
 
 /** Last successful wasm pick — used to republish after a later successful `load()`. */
 let lastSuccessPick = null;
 
-function publishThreadReport(artifact, workers, wasmFile) {
+function publishThreadReport(artifact, workers, wasmFile, attnMinTokens) {
   lastWasmFile = wasmFile;
   lastThreadReport = {
     artifact,
@@ -139,16 +149,18 @@ function publishThreadReport(artifact, workers, wasmFile) {
     availableParallelism: hostParallelism(),
     sabAvailable: sabAvailable(),
     wasm: wasmFile,
+    attnMinTokens: Number.isInteger(attnMinTokens) ? attnMinTokens : resolveAttnMinTokens(),
   };
   lastWasmArtifact = artifact;
   lastThreadCount = workers;
 }
 
-function rememberSuccess(artifact, workers, wasmFile, kernel) {
+function rememberSuccess(artifact, workers, wasmFile, kernel, attnMinTokens) {
   lastSuccessPick = {
     artifact,
     workers,
     wasmFile,
+    attnMinTokens,
     kernel: {
       kernel: kernel.kernel,
       probe: Boolean(kernel.probe),
@@ -163,6 +175,7 @@ function republishLastSuccess() {
     lastSuccessPick.artifact,
     lastSuccessPick.workers,
     lastSuccessPick.wasmFile,
+    lastSuccessPick.attnMinTokens,
   );
   lastQmatmulKernel = lastSuccessPick.kernel;
 }
@@ -208,6 +221,9 @@ function publishLoadError(err, { artifact, workers, wasmFile, kernel, attemptedP
     availableParallelism: hostParallelism(),
     sabAvailable: sabAvailable(),
     wasm,
+    attnMinTokens: Number.isInteger(lastSuccessPick?.attnMinTokens)
+      ? lastSuccessPick.attnMinTokens
+      : resolveAttnMinTokens(),
     error,
   };
   lastWasmArtifact = art;
@@ -269,17 +285,19 @@ function ensureWasm() {
             miltonSetWorkers: m.miltonSetWorkers,
             workerGlue: glueModule,
           });
-          publishThreadReport("threads", workerPool.workerCount, missingName);
-          lastQmatmulKernel = qk;
-          rememberSuccess("threads", workerPool.workerCount, missingName, qk);
           api = m;
+          const attnMinTokens = applyAttnMinTokens(api);
+          publishThreadReport("threads", workerPool.workerCount, missingName, attnMinTokens);
+          lastQmatmulKernel = qk;
+          rememberSuccess("threads", workerPool.workerCount, missingName, qk, attnMinTokens);
         } else {
           const m = await import(glueModule);
           await m.default({ module_or_path: bytes });
-          publishThreadReport("single", 1, missingName);
-          lastQmatmulKernel = qk;
-          rememberSuccess("single", 1, missingName, qk);
           api = m;
+          const attnMinTokens = applyAttnMinTokens(api);
+          publishThreadReport("single", 1, missingName, attnMinTokens);
+          lastQmatmulKernel = qk;
+          rememberSuccess("single", 1, missingName, qk, attnMinTokens);
         }
         lastQ4kCalibration = applyQ4kPolicy(
           {
