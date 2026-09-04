@@ -59,50 +59,50 @@ describe("ATTN_PARALLEL_MIN_TOKENS=32 compare crossover (#58)", () => {
     assert.equal(raw.gate, 32);
   });
 
-  it("JS default / report field equals fixture gate: 32 (Flint rider)", () => {
+  it("JS default and wasm getter equal fixture gate: 32 (Flint rider)", () => {
     assert.equal(extra.gate, ATTN_MIN_TOKENS_DEFAULT);
     assert.equal(resolveAttnMinTokens({}), extra.gate);
     assert.equal(resolveAttnMinTokens({ MILTON_ATTN_MIN_TOKENS: "" }), extra.gate);
-    const ROOT = join(HERE, "../..");
-    const INDEX = join(ROOT, "src", "index.js");
-    const ran = spawnSync(
-      process.execPath,
-      [
-        "-e",
-        `import { embed, lastThreadReport } from ${JSON.stringify(INDEX)};
-await embed("hello", { prefix: "document" });
-process.stdout.write(JSON.stringify(lastThreadReport));`,
-      ],
-      {
-        encoding: "utf8",
-        timeout: 60000,
-        env: { ...process.env },
-      },
-    );
-    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
-    const report = JSON.parse(ran.stdout);
-    assert.equal(report.attnMinTokens, extra.gate);
+    const got = runAttnGate({});
+    assert.equal(got.resolved, extra.gate);
+    assert.equal(got.applied, extra.gate);
+    assert.equal(got.wasm, extra.gate);
   });
 
-  it("MILTON_ATTN_MIN_TOKENS overrides the effective report gate", () => {
-    const ROOT = join(HERE, "../..");
-    const INDEX = join(ROOT, "src", "index.js");
-    const ran = spawnSync(
-      process.execPath,
-      [
-        "-e",
-        `import { embed, lastThreadReport } from ${JSON.stringify(INDEX)};
-await embed("hello", { prefix: "document" });
-process.stdout.write(JSON.stringify(lastThreadReport));`,
-      ],
-      {
-        encoding: "utf8",
-        timeout: 60000,
-        env: { ...process.env, MILTON_ATTN_MIN_TOKENS: "64" },
-      },
-    );
-    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
-    const report = JSON.parse(ran.stdout);
-    assert.equal(report.attnMinTokens, 64);
+  it("MILTON_ATTN_MIN_TOKENS overrides the effective wasm gate", () => {
+    const got = runAttnGate({ MILTON_ATTN_MIN_TOKENS: "64" });
+    assert.equal(got.resolved, 64);
+    assert.equal(got.applied, 64);
+    assert.equal(got.wasm, 64);
   });
 });
+
+function runAttnGate(env) {
+  const ROOT = join(HERE, "../..");
+  const SRC = join(ROOT, "src", "attn-min-tokens.js");
+  const GLUE = join(ROOT, "wasm", "milton_relaxed.js");
+  const WASM = join(ROOT, "wasm", "milton_relaxed_bg.wasm");
+  const ran = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `import { readFileSync } from "node:fs";
+import { applyAttnMinTokens, resolveAttnMinTokens } from ${JSON.stringify(SRC)};
+import init, { attnMinTokens, attnSetMinTokens } from ${JSON.stringify(GLUE)};
+await init({ module_or_path: readFileSync(${JSON.stringify(WASM)}) });
+const applied = applyAttnMinTokens({ attnSetMinTokens, attnMinTokens });
+process.stdout.write(JSON.stringify({
+  resolved: resolveAttnMinTokens(),
+  applied,
+  wasm: attnMinTokens(),
+}));`,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+      env: { ...process.env, ...env },
+    },
+  );
+  assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+  return JSON.parse(ran.stdout);
+}
