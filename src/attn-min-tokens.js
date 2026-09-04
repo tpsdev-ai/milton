@@ -19,18 +19,18 @@ function warnAttnClamp(raw, applied) {
   console.warn(`MILTON_ATTN_MIN_TOKENS=${raw} is out of range; using ${applied}`);
 }
 
-/** `MILTON_ATTN_MIN_TOKENS` or 32. Out-of-range / non-numeric → 32. */
+/** `MILTON_ATTN_MIN_TOKENS` or 32. Trimmed `/^\d+$/` only; else / out-of-range → 32. */
 export function resolveAttnMinTokens(env = process.env) {
   const raw = env.MILTON_ATTN_MIN_TOKENS;
   if (raw === undefined || raw === "") {
     return ATTN_MIN_TOKENS_DEFAULT;
   }
-  const n = Number(raw);
-  if (!Number.isFinite(n)) {
+  const trimmed = String(raw).trim();
+  if (!/^\d+$/.test(trimmed)) {
     warnAttnClamp(raw, ATTN_MIN_TOKENS_DEFAULT);
     return ATTN_MIN_TOKENS_DEFAULT;
   }
-  const want = Math.floor(n);
+  const want = Number(trimmed);
   if (want < 1 || want > ATTN_MIN_TOKENS_MAX) {
     warnAttnClamp(raw, ATTN_MIN_TOKENS_DEFAULT);
     return ATTN_MIN_TOKENS_DEFAULT;
