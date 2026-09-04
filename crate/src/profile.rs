@@ -350,7 +350,8 @@ impl Model {
             acc.add_layer(li, "rope", now_ms() - t0);
 
             #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
-            let attn_threaded = crate::wasm_pool::pool_live();
+            let attn_threaded =
+                crate::wasm_pool::pool_live() && n_tok >= super::ATTN_PARALLEL_MIN_TOKENS;
             #[cfg(not(all(target_arch = "wasm32", feature = "wasm-threads")))]
             let attn_threaded = false;
             if attn_threaded {

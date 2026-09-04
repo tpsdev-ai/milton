@@ -241,6 +241,20 @@ Cursor cloud VM: Linux x86_64, 4× Intel Xeon (KVM), Node v22.14.0,
 `SharedArrayBuffer` present, `os.availableParallelism() = 4`. Flint
 pairs M4. This PR reports the x86 VM.
 
+## Measured addendum (after A2 landed)
+
+A2 join on this KVM host is **not** ~1 µs. Unconditional A2 at n≤19
+(the 8-case set) added ~24 ms/embed and **regressed short-n ~60%**.
+`ATTN_PARALLEL_MIN_TOKENS = 32` keeps A2 off below that floor
+(same `attention_named` body — bit-exact). Long-n n=502 always
+takes the split. Not a join micro-opt as the headline; it is the
+short-n held.
+
+Quiet product-path pair vs `b89d446` on this VM (auto threads,
+relaxed): long 3242.01 → 2287.39 ms = **1.42×** (held 1.35×);
+short 297.23 → 294.34 ms (no >2% regression). Stage table:
+`harness/profile/threads-stage-profile.tables.md`.
+
 ## Out of scope
 
 GPU. Bun-only. Q6_K relaxed offset-fold. Native AMX. Flair batch
