@@ -1,17 +1,19 @@
-//! Shared-memory worker pool for the threaded wasm artifact (issue #44).
+//! Shared-memory worker pool for the threaded wasm artifact (issues #44 / #56).
 //!
 //! Coordinator (main wasm thread inside `embed`) writes a job list, `Release`s
 //! an epoch, and `memory_atomic_wait32`s until `workers_done == W`.
 //! Workers park on the epoch, compute a disjoint output-column range, then
 //! `Release` on `workers_done`.
 //!
-//! No allocations on the worker path. Weights and the Q8_K tile are immutable
-//! for the dispatch; each worker writes only its half-open column range.
+//! No allocations on the worker path. Weights, the Q8_K tile, and Q/K/V are
+//! immutable for the dispatch; each worker writes only its half-open column
+//! range (`matmul`) or head range (`TY_ATTN`).
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::gguf::TensorType;
+use crate::ops::attention_heads;
 use crate::qmatmul::{column_range, matmul_ggml_cols, BlockQ8K, QuantMat};
 
 pub(crate) const MAX_SITES: usize = 2;
@@ -19,6 +21,8 @@ pub(crate) const TY_Q4K8: u32 = 1;
 pub(crate) const TY_Q4K: u32 = 2;
 pub(crate) const TY_Q5K: u32 = 3;
 pub(crate) const TY_Q6K: u32 = 4;
+/// Bidirectional attention, head-split (issue #56). `align = head_dim`.
+pub(crate) const TY_ATTN: u32 = 5;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -35,6 +39,12 @@ pub(crate) struct SiteJob {
     pub q_len: u32,
     pub y_ptr: u32,
     pub y_len: u32,
+    /// Attention only: V activations. Matmul sites leave these 0.
+    pub v_ptr: u32,
+    pub v_len: u32,
+    /// Attention only: coordinator-owned `W * n_tokens` scores. Matmul: 0.
+    pub scores_ptr: u32,
+    pub scores_len: u32,
 }
 
 struct Control {
@@ -70,6 +80,10 @@ static CONTROL: Control = Control {
         q_len: 0,
         y_ptr: 0,
         y_len: 0,
+        v_ptr: 0,
+        v_len: 0,
+        scores_ptr: 0,
+        scores_len: 0,
     }; MAX_SITES]),
 };
 
@@ -134,6 +148,10 @@ pub(crate) fn worker_enter(id: u32) {
 }
 
 fn run_site(job: &SiteJob, worker: usize, n_workers: usize) {
+    if job.ty == TY_ATTN {
+        run_attn(job, worker, n_workers);
+        return;
+    }
     let n_out = job.n_out as usize;
     let align = job.align.max(1) as usize;
     let (col_start, col_end) = column_range(n_out, worker, n_workers, align);
@@ -207,7 +225,42 @@ fn site_from(w: &QuantMat, qrows: &[BlockQ8K], n_tokens: usize, y: &mut [f32]) -
         q_len: qrows.len() as u32,
         y_ptr: y.as_mut_ptr() as u32,
         y_len: y.len() as u32,
+        v_ptr: 0,
+        v_len: 0,
+        scores_ptr: 0,
+        scores_len: 0,
     })
+}
+
+fn run_attn(job: &SiteJob, worker: usize, n_workers: usize) {
+    let n_embd = job.n_out as usize;
+    let head_dim = job.align.max(1) as usize;
+    let (col_start, col_end) = column_range(n_embd, worker, n_workers, head_dim);
+    if col_start >= col_end {
+        return;
+    }
+    let h_start = col_start / head_dim;
+    let h_end = col_end / head_dim;
+    let n_tokens = job.n_tokens as usize;
+    let n_heads = job.n_in as usize;
+    // SAFETY: coordinator wrote Q/K/V (RoPE done) before Release on epoch.
+    // This worker writes only heads [h_start, h_end) of `out` and its
+    // scores row. Pointers stay valid until workers_done join (issue #56).
+    let q = unsafe { std::slice::from_raw_parts(job.q_ptr as *const f32, job.q_len as usize) };
+    let k = unsafe { std::slice::from_raw_parts(job.w_ptr as *const f32, job.w_len as usize) };
+    let v = unsafe { std::slice::from_raw_parts(job.v_ptr as *const f32, job.v_len as usize) };
+    let out = unsafe { std::slice::from_raw_parts_mut(job.y_ptr as *mut f32, job.y_len as usize) };
+    let scores_all = unsafe {
+        std::slice::from_raw_parts_mut(job.scores_ptr as *mut f32, job.scores_len as usize)
+    };
+    let row = worker * n_tokens;
+    if row + n_tokens > scores_all.len() {
+        return;
+    }
+    let scores = &mut scores_all[row..row + n_tokens];
+    attention_heads(
+        q, k, v, n_tokens, n_heads, head_dim, h_start, h_end, scores, out,
+    );
 }
 
 fn dispatch(jobs: &[SiteJob]) -> bool {
@@ -286,4 +339,52 @@ pub(crate) fn dispatch_pair(
         return false;
     };
     dispatch(&[a, b])
+}
+
+/// Head-split attention. Returns false if the pool is idle.
+///
+/// `scores` is coordinator-owned, length `W * n_tokens`. Worker `i` writes
+/// only `scores[i * n_tokens .. (i+1) * n_tokens]`.
+pub(crate) fn dispatch_attn(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+    out: &mut [f32],
+    scores: &mut [f32],
+) -> bool {
+    if !pool_live() || n_heads == 0 || head_dim == 0 {
+        return false;
+    }
+    let n_embd = n_heads * head_dim;
+    let n_workers = worker_count() as usize;
+    if q.len() != n_tokens * n_embd
+        || k.len() != n_tokens * n_embd
+        || v.len() != n_tokens * n_embd
+        || out.len() != n_tokens * n_embd
+        || scores.len() < n_workers * n_tokens
+    {
+        return false;
+    }
+    let job = SiteJob {
+        ty: TY_ATTN,
+        n_tokens: n_tokens as u32,
+        n_in: n_heads as u32,
+        n_out: n_embd as u32,
+        n_blocks: head_dim as u32,
+        align: head_dim as u32,
+        w_ptr: k.as_ptr() as u32,
+        w_len: k.len() as u32,
+        q_ptr: q.as_ptr() as u32,
+        q_len: q.len() as u32,
+        y_ptr: out.as_mut_ptr() as u32,
+        y_len: out.len() as u32,
+        v_ptr: v.as_ptr() as u32,
+        v_len: v.len() as u32,
+        scores_ptr: scores.as_mut_ptr() as u32,
+        scores_len: scores.len() as u32,
+    };
+    dispatch(&[job])
 }
