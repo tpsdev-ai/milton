@@ -43,9 +43,9 @@ describe("MILTON_ATTN_MIN_TOKENS parse / clamp (#59)", () => {
   });
 
   it("in-range integers apply and do not warn", () => {
-    for (const raw of ["1", "32", "64", String(ATTN_MIN_TOKENS_MAX), "3.9"]) {
+    for (const raw of ["1", "32", "64", String(ATTN_MIN_TOKENS_MAX)]) {
       const got = clampRun(raw);
-      const want = raw === "3.9" ? 3 : Number(raw);
+      const want = Number(raw);
       assert.equal(got.first, want, raw);
       assert.equal(got.second, want, raw);
       assert.equal(got.warnings.length, 0, raw);
@@ -53,7 +53,7 @@ describe("MILTON_ATTN_MIN_TOKENS parse / clamp (#59)", () => {
   });
 
   it("non-numeric / out-of-range fall back to 32 and warn once", () => {
-    for (const raw of ["abc", "0", "-3", "NaN", "Infinity", "-Infinity", "99999"]) {
+    for (const raw of ["abc", "0", "-3", "NaN", "Infinity", "-Infinity", "99999", "0x10", "3.9"]) {
       const got = clampRun(raw);
       assert.equal(got.first, ATTN_MIN_TOKENS_DEFAULT, raw);
       assert.equal(got.second, ATTN_MIN_TOKENS_DEFAULT, raw);
