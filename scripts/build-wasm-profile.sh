@@ -29,14 +29,40 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128 --remap-path-prefix=
 
 FEATURES="profile"
 TARGET_DIR="$CRATE/target/profile-wasm-crate"
+THREADS=0
 if [[ "${MILTON_PROFILE_RELAXED:-}" == "1" ]]; then
   FEATURES="profile,relaxed-simd"
   TARGET_DIR="$CRATE/target/profile-wasm-relaxed-crate"
 fi
+if [[ "${MILTON_PROFILE_THREADS:-}" == "1" ]]; then
+  THREADS=1
+  FEATURES="${FEATURES},wasm-threads"
+  if [[ "${MILTON_PROFILE_RELAXED:-}" == "1" ]]; then
+    TARGET_DIR="$CRATE/target/profile-wasm-threads-relaxed-crate"
+  else
+    TARGET_DIR="$CRATE/target/profile-wasm-threads-crate"
+  fi
+fi
 
-cargo build --manifest-path "$CRATE/Cargo.toml" \
-  --target wasm32-unknown-unknown --release --lib --features "$FEATURES" \
-  --target-dir "$TARGET_DIR"
+if [[ "$THREADS" == "1" ]]; then
+  if ! rustup component list --installed | grep -q '^rust-src'; then
+    rustup component add rust-src
+  fi
+  CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+  RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
+  REMAP="--remap-path-prefix=${CARGO_HOME_DIR}/registry/src=/cargo/registry/src --remap-path-prefix=${ROOT}=/milton --remap-path-prefix=${RUSTUP_HOME_DIR}=/rustup"
+  export RUSTC_BOOTSTRAP=1
+  export RUSTFLAGS="-C target-feature=+simd128,+atomics,+bulk-memory,+mutable-globals ${REMAP}"
+  cargo build --manifest-path "$CRATE/Cargo.toml" \
+    --target wasm32-unknown-unknown --release --lib --features "$FEATURES" \
+    --target-dir "$TARGET_DIR" \
+    -Z build-std=std,panic_abort \
+    -Z build-std-features=panic_immediate_abort
+else
+  cargo build --manifest-path "$CRATE/Cargo.toml" \
+    --target wasm32-unknown-unknown --release --lib --features "$FEATURES" \
+    --target-dir "$TARGET_DIR"
+fi
 
 RAW="$TARGET_DIR/wasm32-unknown-unknown/release/milton.wasm"
 if [[ ! -f "$RAW" ]]; then

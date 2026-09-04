@@ -313,7 +313,7 @@ impl Model {
             dump_stage(&format!("Qcur-{li}"), &q);
             dump_stage(&format!("Kcur-{li}"), &k);
             dump_stage(&format!("Vcur-{li}"), &v);
-            attention_named(
+            attention_layer(
                 &q,
                 &k,
                 &v,
@@ -422,6 +422,33 @@ fn forward_variant() -> ForwardVariant {
         "qkv_interleaved" => ForwardVariant::QkvInterleaved,
         _ => ForwardVariant::Baseline,
     }
+}
+
+/// Phase A2: head-split attention when the threaded pool is live.
+/// Same `attention_named` body; W=1 / single-thread artifact stay serial.
+fn attention_layer(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_tok: usize,
+    n_head: usize,
+    head_dim: usize,
+    attn_out: &mut [f32],
+    dump_tag: Option<&str>,
+) {
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+    {
+        if crate::wasm_pool::pool_live() {
+            let w = crate::wasm_pool::worker_count() as usize;
+            let mut scores = vec![0.0f32; w * n_tok];
+            if crate::wasm_pool::dispatch_attn(
+                q, k, v, n_tok, n_head, head_dim, attn_out, &mut scores,
+            ) {
+                return;
+            }
+        }
+    }
+    attention_named(q, k, v, n_tok, n_head, head_dim, attn_out, dump_tag);
 }
 
 /// Sites 3+4 share the same `x` and write disjoint buffers. One join when

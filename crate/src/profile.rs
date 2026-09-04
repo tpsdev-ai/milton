@@ -349,17 +349,46 @@ impl Model {
             }
             acc.add_layer(li, "rope", now_ms() - t0);
 
-            timed_attention(
-                acc,
-                li,
-                &q,
-                &k,
-                &v,
-                n_tok,
-                self.n_head,
-                self.head_dim,
-                &mut attn_out,
-            );
+            #[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+            let attn_threaded = crate::wasm_pool::pool_live();
+            #[cfg(not(all(target_arch = "wasm32", feature = "wasm-threads")))]
+            let attn_threaded = false;
+            if attn_threaded {
+                // A2 join includes qk + softmax + V-mix. Record the wall as
+                // attn_qk so ATTN_STAGES still sums. Sub-stage split is the
+                // serial W=1 table only.
+                let t0 = now_ms();
+                super::attention_layer(
+                    &q,
+                    &k,
+                    &v,
+                    n_tok,
+                    self.n_head,
+                    self.head_dim,
+                    &mut attn_out,
+                    None,
+                );
+                acc.add_layer(li, "attn_qk", now_ms() - t0);
+                acc.counters.attn_qk_dots += (self.n_head * n_tok * n_tok) as u64;
+                acc.counters.attn_qk_flops +=
+                    2u64 * self.n_head as u64 * n_tok as u64 * n_tok as u64 * self.head_dim as u64;
+                acc.counters.attn_softmax_rows += (self.n_head * n_tok) as u64;
+                acc.counters.attn_vmix_axpy += (self.n_head * n_tok * n_tok) as u64;
+                acc.counters.attn_vmix_flops +=
+                    2u64 * self.n_head as u64 * n_tok as u64 * n_tok as u64 * self.head_dim as u64;
+            } else {
+                timed_attention(
+                    acc,
+                    li,
+                    &q,
+                    &k,
+                    &v,
+                    n_tok,
+                    self.n_head,
+                    self.head_dim,
+                    &mut attn_out,
+                );
+            }
 
             timed_matmul(
                 acc,

@@ -325,34 +325,34 @@ pub fn attention(
     attention_named(q, k, v, n_tokens, n_heads, head_dim, out, None);
 }
 
-/// Same as `attention`, with optional dump tag (`MILTON_DUMP=1` writes kq / softmax).
-pub fn attention_named(
+/// Head-range attention. Worker `i` owns `[h_start, h_end)`.
+///
+/// Same body as `attention_named` (serial Q@K, `softmax_inplace`,
+/// `vmix_axpy`). The only difference is which heads are iterated.
+/// Writes `out[tq * n_embd + h * head_dim ..]` for `h` in the range.
+/// `scores` is one `n_tokens` row, private to this call.
+pub fn attention_heads(
     q: &[f32],
     k: &[f32],
     v: &[f32],
     n_tokens: usize,
     n_heads: usize,
     head_dim: usize,
+    h_start: usize,
+    h_end: usize,
+    scores: &mut [f32],
     out: &mut [f32],
-    dump_tag: Option<&str>,
 ) {
+    debug_assert!(h_end <= n_heads);
+    debug_assert!(h_start <= h_end);
+    debug_assert_eq!(scores.len(), n_tokens);
+    debug_assert_eq!(q.len(), n_tokens * n_heads * head_dim);
+    debug_assert_eq!(k.len(), n_tokens * n_heads * head_dim);
+    debug_assert_eq!(v.len(), n_tokens * n_heads * head_dim);
+    debug_assert_eq!(out.len(), n_tokens * n_heads * head_dim);
     let scale = 1.0 / (head_dim as f32).sqrt();
-    let mut scores = vec![0.0f32; n_tokens];
-    #[cfg(target_arch = "wasm32")]
-    let dump = false;
-    #[cfg(not(target_arch = "wasm32"))]
-    let dump = dump_tag.is_some() && std::env::var("MILTON_DUMP").ok().as_deref() == Some("1");
-    let mut kq_raw = if dump {
-        vec![0.0f32; n_heads * n_tokens * n_tokens]
-    } else {
-        Vec::new()
-    };
-    let mut kq_sm = if dump {
-        vec![0.0f32; n_heads * n_tokens * n_tokens]
-    } else {
-        Vec::new()
-    };
-    for h in 0..n_heads {
+    let n_embd = n_heads * head_dim;
+    for h in h_start..h_end {
         for tq in 0..n_tokens {
             let qoff = (tq * n_heads + h) * head_dim;
             let qh = &q[qoff..qoff + head_dim];
@@ -364,18 +364,9 @@ pub fn attention_named(
                     dot += qh[i] * kh[i];
                 }
                 scores[tk] = dot * scale;
-                if dump {
-                    // llama kq is {n_kv, n_q, n_heads} = tk + tq*n + h*n*n
-                    kq_raw[tk + tq * n_tokens + h * n_tokens * n_tokens] = dot;
-                }
             }
-            softmax_inplace(&mut scores);
-            if dump {
-                for tk in 0..n_tokens {
-                    kq_sm[tk + tq * n_tokens + h * n_tokens * n_tokens] = scores[tk];
-                }
-            }
-            let ooff = tq * n_heads * head_dim + h * head_dim;
+            softmax_inplace(scores);
+            let ooff = tq * n_embd + h * head_dim;
             for i in 0..head_dim {
                 out[ooff + i] = 0.0;
             }
@@ -394,11 +385,69 @@ pub fn attention_named(
             }
         }
     }
-    if let Some(tag) = dump_tag {
-        if dump {
-            dump_f32(&format!("kq-{tag}"), &kq_raw);
-            dump_f32(&format!("kq_soft_max-{tag}"), &kq_sm);
+}
+
+/// Same as `attention`, with optional dump tag (`MILTON_DUMP=1` writes kq / softmax).
+pub fn attention_named(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_tokens: usize,
+    n_heads: usize,
+    head_dim: usize,
+    out: &mut [f32],
+    dump_tag: Option<&str>,
+) {
+    #[cfg(target_arch = "wasm32")]
+    let dump = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let dump = dump_tag.is_some() && std::env::var("MILTON_DUMP").ok().as_deref() == Some("1");
+    if !dump {
+        let mut scores = vec![0.0f32; n_tokens];
+        attention_heads(q, k, v, n_tokens, n_heads, head_dim, 0, n_heads, &mut scores, out);
+        return;
+    }
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut scores = vec![0.0f32; n_tokens];
+    let mut kq_raw = vec![0.0f32; n_heads * n_tokens * n_tokens];
+    let mut kq_sm = vec![0.0f32; n_heads * n_tokens * n_tokens];
+    for h in 0..n_heads {
+        for tq in 0..n_tokens {
+            let qoff = (tq * n_heads + h) * head_dim;
+            let qh = &q[qoff..qoff + head_dim];
+            for tk in 0..n_tokens {
+                let koff = (tk * n_heads + h) * head_dim;
+                let kh = &k[koff..koff + head_dim];
+                let mut dot = 0.0f32;
+                for i in 0..head_dim {
+                    dot += qh[i] * kh[i];
+                }
+                scores[tk] = dot * scale;
+                // llama kq is {n_kv, n_q, n_heads} = tk + tq*n + h*n*n
+                kq_raw[tk + tq * n_tokens + h * n_tokens * n_tokens] = dot;
+            }
+            softmax_inplace(&mut scores);
+            for tk in 0..n_tokens {
+                kq_sm[tk + tq * n_tokens + h * n_tokens * n_tokens] = scores[tk];
+            }
+            let ooff = tq * n_heads * head_dim + h * head_dim;
+            for i in 0..head_dim {
+                out[ooff + i] = 0.0;
+            }
+            for tk in 0..n_tokens {
+                let a = scores[tk];
+                let voff = (tk * n_heads + h) * head_dim;
+                crate::exp::vmix_axpy(
+                    &mut out[ooff..ooff + head_dim],
+                    a,
+                    &v[voff..voff + head_dim],
+                );
+            }
         }
+    }
+    if let Some(tag) = dump_tag {
+        dump_f32(&format!("kq-{tag}"), &kq_raw);
+        dump_f32(&format!("kq_soft_max-{tag}"), &kq_sm);
     }
 }
 
@@ -588,5 +637,43 @@ mod tests {
         softmax_inplace(&mut x);
         let s: f32 = x.iter().sum();
         assert!((s - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn attention_head_split_matches_serial_bit_exact() {
+        // nomic dims. Four workers × 3 heads = column-split of attn_out
+        // with align=head_dim (issue #56). Same arithmetic as attention_named.
+        let n_tokens = 5;
+        let n_heads = 12;
+        let head_dim = 64;
+        let n_embd = n_heads * head_dim;
+        let mut q = vec![0.0f32; n_tokens * n_embd];
+        let mut k = vec![0.0f32; n_tokens * n_embd];
+        let mut v = vec![0.0f32; n_tokens * n_embd];
+        let mut seed = 0xA5A5_1234u32;
+        for x in q.iter_mut().chain(k.iter_mut()).chain(v.iter_mut()) {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            *x = ((seed >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0;
+        }
+        let mut serial = vec![0.0f32; n_tokens * n_embd];
+        attention_named(&q, &k, &v, n_tokens, n_heads, head_dim, &mut serial, None);
+        let mut split = vec![0.0f32; n_tokens * n_embd];
+        for w in 0..4 {
+            let h0 = w * 3;
+            let mut scores = vec![0.0f32; n_tokens];
+            attention_heads(
+                &q,
+                &k,
+                &v,
+                n_tokens,
+                n_heads,
+                head_dim,
+                h0,
+                h0 + 3,
+                &mut scores,
+                &mut split,
+            );
+        }
+        assert_eq!(serial, split, "head-split attention drifted from serial");
     }
 }

@@ -61,7 +61,8 @@
     "wasm:bench": "node harness/scripts/bench-milton.mjs",
     "wasm:must-fail": "node harness/scripts/wasm-must-fail.mjs",
     "wasm:sab-absent": "node harness/scripts/wasm-sab-absent.mjs",
-    "profile:stages": "node harness/scripts/profile-stages.mjs"
+    "profile:stages": "node harness/scripts/profile-stages.mjs",
+    "profile:stages:threads": "node harness/scripts/profile-threads-stages.mjs"
   },
   "engines": {
     "node": ">=22"

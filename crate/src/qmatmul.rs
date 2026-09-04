@@ -1616,6 +1616,14 @@ mod tests {
             assert_eq!(prev, n_out);
         }
         assert_eq!(column_range(768, 0, 1, 8), (0, 768));
+        // #56 attention: n_embd=768, align=head_dim=64, W=4 → 3 heads each.
+        for w in 0..4 {
+            let (a, b) = column_range(768, w, 4, 64);
+            assert_eq!(a, w * 192);
+            assert_eq!(b, (w + 1) * 192);
+            assert_eq!(a % 64, 0);
+            assert_eq!(b % 64, 0);
+        }
     }
 
     #[test]
