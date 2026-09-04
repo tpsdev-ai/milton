@@ -311,4 +311,38 @@ mod unit {
             vec![101, 3945, 1035, 6254, 1024, 102]
         );
     }
+
+    /// Compare-only fixtures (not the 18-case goldens corpus) pin n=31/32/33
+    /// so the ATTN_PARALLEL_MIN_TOKENS=32 serial→parallel gate is itself a
+    /// bit-exact check. Token counts must match `ids.len()` after prefix.
+    #[test]
+    fn attn_crossover_fixtures_pin_min_tokens_boundary() {
+        let raw = include_str!("../../harness/corpus/compare-crossover.json");
+        let doc: serde_json::Value =
+            serde_json::from_str(raw).expect("compare-crossover.json");
+        assert_eq!(doc["gate"], 32);
+        let want = [
+            ("attn-crossover-31", 31usize),
+            ("attn-crossover-32", 32),
+            ("attn-crossover-33", 33),
+        ];
+        let cases = doc["cases"].as_array().expect("cases");
+        assert_eq!(cases.len(), want.len());
+        for (id, n) in want {
+            let case = cases
+                .iter()
+                .find(|c| c["id"].as_str() == Some(id))
+                .unwrap_or_else(|| panic!("missing {id}"));
+            let text = case["text"].as_str().expect("text");
+            let prefix = Prefix::parse(case["prefix"].as_str().expect("prefix")).unwrap();
+            let ids = tokenize(text, prefix);
+            assert_eq!(
+                ids.len(),
+                n,
+                "{id} tokenize len {} != pinned n_tokens {n}",
+                ids.len()
+            );
+            assert_eq!(case["n_tokens"].as_u64().unwrap() as usize, n);
+        }
+    }
 }
