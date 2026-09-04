@@ -128,6 +128,23 @@ export function q4kThreshold() {
 }
 
 /**
+ * Effective A2 serial→parallel token gate (default 32). JS reads
+ * `MILTON_ATTN_MIN_TOKENS` and calls `attnSetMinTokens`.
+ * @param {number} n
+ */
+export function attnSetMinTokens(n) {
+    wasm.attnSetMinTokens(n);
+}
+
+/**
+ * @returns {number}
+ */
+export function attnMinTokens() {
+    const ret = wasm.attnMinTokens();
+    return ret >>> 0;
+}
+
+/**
  * One synthetic superblock × `n_tokens` of the shipped per-k tile.
  * @param {number} n_tokens
  */

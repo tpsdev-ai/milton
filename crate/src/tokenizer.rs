@@ -321,6 +321,16 @@ mod unit {
         let doc: serde_json::Value =
             serde_json::from_str(raw).expect("compare-crossover.json");
         assert_eq!(doc["gate"], 32);
+        assert_eq!(
+            crate::model::ATTN_PARALLEL_MIN_TOKENS,
+            doc["gate"].as_u64().unwrap() as usize,
+            "Rust default must match compare-crossover.json gate",
+        );
+        assert_eq!(
+            crate::model::attn_parallel_min_tokens(),
+            doc["gate"].as_u64().unwrap() as usize,
+            "effective gate (no override) must match compare-crossover.json gate",
+        );
         let want = [
             ("attn-crossover-31", 31usize),
             ("attn-crossover-32", 32),

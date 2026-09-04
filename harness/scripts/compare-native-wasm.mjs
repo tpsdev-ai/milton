@@ -93,6 +93,16 @@ for (const pin of ATTN_CROSSOVER_PINS) {
   });
 }
 
+const effectiveGate = lastThreadReport?.attnMinTokens;
+if (
+  !process.env.MILTON_ATTN_MIN_TOKENS &&
+  effectiveGate !== corpus.gate
+) {
+  throw new Error(
+    `fail-closed: lastThreadReport.attnMinTokens=${effectiveGate} !== compare-crossover.json gate=${corpus.gate}`,
+  );
+}
+
 let result = failed === 0 ? "pass" : "fail";
 const tight =
   process.env.MILTON_ROPE_LIBM_SIN !== "1" && process.env.MILTON_COMPARE_TIGHT !== "0";
@@ -119,7 +129,7 @@ const receipt = {
   thread_report: lastThreadReport,
   qmatmul_kernel: lastQmatmulKernel,
   tight_max_abs: tight ? { expected: 0, got: maxAbs, pass: maxAbs === 0 } : null,
-  attn_crossover: { gate: 32, cases: crossover },
+  attn_crossover: { gate: effectiveGate, cases: crossover },
   note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten. Compare corpus is the 18 conformance cases plus attn-crossover-31/32/33 (n=31/32/33) pinning ATTN_PARALLEL_MIN_TOKENS=32. No kernel change.",
   cases: rows,
 };

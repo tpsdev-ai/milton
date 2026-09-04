@@ -19,11 +19,14 @@ The JS loader (`src/index.js`) picks the threaded module only when
 shared-memory probe, **and** the pool would be larger than 1.
 `MILTON_THREADS=1` forces the single-thread module (not threads-with-W=1).
 `MILTON_THREADS=<n>` sizes the pool when the threads artifact is selected.
-`lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable, wasm}`
+`lastThreadReport` records `{artifact, workers, availableParallelism, sabAvailable, wasm, attnMinTokens}`
 after load (`sabAvailable` is the capability probe, not the pick; `wasm` is
-the basename actually instantiated). A failed load publishes the same grain
+the basename actually instantiated; `attnMinTokens` is the effective A2
+serial→parallel gate after `MILTON_ATTN_MIN_TOKENS` / default 32). A failed load publishes the same grain
 with an `error` string and `wasm` set to the artifact that was attempted
 (never a prior success).
+`MILTON_ATTN_MIN_TOKENS` overrides that gate (non-numeric / out-of-range → 32, warn once).
+This is an env override only — not a measured load-time crossover.
 Absence of SAB is the ordinary path, not an error. A shared-memory module
 cannot instantiate where SAB is absent — that is why there are separate
 single-thread and threaded artifacts, each with a simd128 and relaxed variant.
@@ -96,6 +99,11 @@ are CI's rebuilt blobs from that run's `milton_bg.wasm` artifact:
 `milton_threads_relaxed_bg.wasm` is new in the threads-relaxed fix (`bc35f6b`).
 CI run `33777431688` is the build of record for both threaded blobs.
 Glue (`milton_threads.js` / `milton_threads_relaxed.js`) is byte-identical.
+
+#59 adds `attnSetMinTokens` / `attnMinTokens` (env override of the A2 gate).
+That forces a remapped rebuild. CI remains the build of record for the
+threaded blobs (`-Z build-std` crate-hash). If this PR's byte-compare is
+red, replace the committed threads wasm with CI's uploaded artifact.
 
 ## How the wasm is produced (builder-side only)
 

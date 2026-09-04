@@ -9,6 +9,12 @@ export function q4kSetForce(name: string): void;
 export function q4kSetThreshold(t: number): void;
 export function q4kThreshold(): number;
 /**
+ * Effective A2 serial→parallel token gate (default 32). JS reads
+ * `MILTON_ATTN_MIN_TOKENS` and calls `attnSetMinTokens`.
+ */
+export function attnSetMinTokens(n: number): void;
+export function attnMinTokens(): number;
+/**
  * One synthetic superblock × `n_tokens` of the shipped per-k tile.
  */
 export function q4kRunPerk(n_tokens: number): void;
@@ -57,6 +63,8 @@ export interface InitOutput {
   readonly q4kSetForce: (a: number, b: number) => void;
   readonly q4kSetThreshold: (a: number) => void;
   readonly q4kThreshold: () => number;
+  readonly attnSetMinTokens: (a: number) => void;
+  readonly attnMinTokens: () => number;
   readonly q4kRunPerk: (a: number) => void;
   readonly q4kRunBprime: (a: number) => void;
   readonly wasmMemory: () => any;

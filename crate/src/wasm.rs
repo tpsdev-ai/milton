@@ -88,6 +88,18 @@ pub fn q4k_threshold() -> u32 {
     crate::qmatmul_simd128::q4k_threshold()
 }
 
+/// Effective A2 serial→parallel token gate (default 32). JS reads
+/// `MILTON_ATTN_MIN_TOKENS` and calls `attnSetMinTokens`.
+#[wasm_bindgen(js_name = attnSetMinTokens)]
+pub fn attn_set_min_tokens(n: u32) {
+    crate::model::set_attn_parallel_min_tokens(n);
+}
+
+#[wasm_bindgen(js_name = attnMinTokens)]
+pub fn attn_min_tokens() -> u32 {
+    crate::model::attn_parallel_min_tokens() as u32
+}
+
 /// One synthetic superblock × `n_tokens` of the shipped per-k tile.
 #[wasm_bindgen(js_name = q4kRunPerk)]
 pub fn q4k_run_perk(n_tokens: u32) {

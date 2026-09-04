@@ -1,8 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ATTN_MIN_TOKENS_DEFAULT, resolveAttnMinTokens } from "../../src/attn-min-tokens.js";
 import {
   ATTN_CROSSOVER_PINS,
   COMPARE_CROSSOVER_PATH,
@@ -55,5 +57,52 @@ describe("ATTN_PARALLEL_MIN_TOKENS=32 compare crossover (#58)", () => {
     const raw = JSON.parse(readFileSync(COMPARE_CROSSOVER_PATH, "utf8"));
     assert.equal(raw.schema, "milton.compare-crossover/1");
     assert.equal(raw.gate, 32);
+  });
+
+  it("JS default / report field equals fixture gate: 32 (Flint rider)", () => {
+    assert.equal(extra.gate, ATTN_MIN_TOKENS_DEFAULT);
+    assert.equal(resolveAttnMinTokens({}), extra.gate);
+    assert.equal(resolveAttnMinTokens({ MILTON_ATTN_MIN_TOKENS: "" }), extra.gate);
+    const ROOT = join(HERE, "../..");
+    const INDEX = join(ROOT, "src", "index.js");
+    const ran = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `import { embed, lastThreadReport } from ${JSON.stringify(INDEX)};
+await embed("hello", { prefix: "document" });
+process.stdout.write(JSON.stringify(lastThreadReport));`,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60000,
+        env: { ...process.env },
+      },
+    );
+    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+    const report = JSON.parse(ran.stdout);
+    assert.equal(report.attnMinTokens, extra.gate);
+  });
+
+  it("MILTON_ATTN_MIN_TOKENS overrides the effective report gate", () => {
+    const ROOT = join(HERE, "../..");
+    const INDEX = join(ROOT, "src", "index.js");
+    const ran = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `import { embed, lastThreadReport } from ${JSON.stringify(INDEX)};
+await embed("hello", { prefix: "document" });
+process.stdout.write(JSON.stringify(lastThreadReport));`,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60000,
+        env: { ...process.env, MILTON_ATTN_MIN_TOKENS: "64" },
+      },
+    );
+    assert.equal(ran.status, 0, ran.stderr || ran.stdout);
+    const report = JSON.parse(ran.stdout);
+    assert.equal(report.attnMinTokens, 64);
   });
 });
