@@ -1,0 +1,28 @@
+{
+  "schema": "milton.compare-crossover/1",
+  "notes": "Compare-only text fixtures. Not part of the 18-case conformance corpus (goldens / corpus digest unchanged). Pins the ATTN_PARALLEL_MIN_TOKENS=32 serial→parallel gate: n=31 stays serial, n=32/33 take the head-split when the threads pool is live. No kernel change.",
+  "gate": 32,
+  "cases": [
+    {
+      "id": "attn-crossover-31",
+      "text": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello",
+      "prefix": "document",
+      "n_tokens": 31,
+      "trap": "25× hello under search_document: tokenizes to n=31 (just below ATTN_PARALLEL_MIN_TOKENS=32). Traps a regression that flips the serial→parallel comparison at the gate without a bit-exact compare case on the serial side of the boundary."
+    },
+    {
+      "id": "attn-crossover-32",
+      "text": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello",
+      "prefix": "document",
+      "n_tokens": 32,
+      "trap": "26× hello under search_document: tokenizes to n=32 (the ATTN_PARALLEL_MIN_TOKENS gate). On the threads artifact with workers>1 this is the first length that takes attention_heads via dispatch_attn. Traps a flipped comparison at exactly the crossover."
+    },
+    {
+      "id": "attn-crossover-33",
+      "text": "hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello",
+      "prefix": "document",
+      "n_tokens": 33,
+      "trap": "27× hello under search_document: tokenizes to n=33 (one past the gate). Cheap third pin so a 31/32-only off-by-one on the parallel side cannot hide."
+    }
+  ]
+}

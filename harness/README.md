@@ -105,6 +105,7 @@ If the Flair path cannot run here, the bench script exits `2` and writes `BLOCKE
 
 ```
 harness/corpus/corpus.json     fixed cases; each documents the failure mode it traps
+harness/corpus/compare-crossover.json  compare-only n=31/32/33 pins for ATTN_PARALLEL_MIN_TOKENS=32
 harness/goldens/vectors.json   pinned Q4_K_M llama.cpp vectors (q_llama; 2 cases via embed-from-token-ids)
 harness/goldens/vectors-f16.json  F16/F32 llama.cpp oracle (ref_f32; same 2 cases via token IDs)
 harness/goldens/vectors-pre-15-wrong.json  #15 regression lock: old text-path goldens that must FAIL

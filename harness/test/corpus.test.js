@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { loadCorpus, corpusDigest } from "../lib/corpus.js";
+import { loadCompareCorpus, loadCorpus, corpusDigest } from "../lib/corpus.js";
 
 describe("conformance corpus", () => {
   const corpus = loadCorpus();
@@ -46,5 +46,12 @@ describe("conformance corpus", () => {
     const nfd = corpus.cases.find((c) => c.id === "unicode-nfd");
     assert.notEqual(nfc.text, nfd.text);
     assert.equal(nfc.text.normalize("NFC"), nfd.text.normalize("NFC"));
+  });
+
+  it("compare corpus is the 18 conformance cases plus n=31/32/33 pins", () => {
+    const compare = loadCompareCorpus();
+    assert.equal(corpus.cases.length, 18);
+    assert.equal(compare.cases.length, 21);
+    assert.equal(compare.gate, 32);
   });
 });

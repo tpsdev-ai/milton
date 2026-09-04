@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCorpus } from "../lib/corpus.js";
+import { ATTN_CROSSOVER_PINS, loadCompareCorpus } from "../lib/corpus.js";
 import { loadEpsilon } from "../lib/goldens.js";
 import { compareVectors } from "../lib/metrics.js";
 import { createNativeEmbedder } from "../lib/milton-native.js";
@@ -41,7 +41,7 @@ if (process.env.MILTON_ROPE_LIBM_SIN === "1") {
   process.env.MILTON_EMBED_BIN = bin;
 }
 
-const corpus = loadCorpus();
+const corpus = loadCompareCorpus();
 const eps = loadEpsilon();
 const native = createNativeEmbedder();
 const nativeEmbed = native.embed;
@@ -69,11 +69,28 @@ for (const c of corpus.cases) {
     pass: cmp.pass,
     reason: cmp.reason ?? null,
   };
+  if (Number.isInteger(c.n_tokens)) row.n_tokens = c.n_tokens;
   rows.push(row);
   if (cmp.cos_dist > maxCos) maxCos = cmp.cos_dist;
   if (Number.isFinite(cmp.max_abs) && cmp.max_abs > maxAbs) maxAbs = cmp.max_abs;
   sumCos += Number.isFinite(cmp.cos_dist) ? cmp.cos_dist : 1;
   if (!cmp.pass) failed += 1;
+}
+
+const crossover = [];
+for (const pin of ATTN_CROSSOVER_PINS) {
+  const row = rows.find((r) => r.id === pin.id);
+  if (!row || row.n_tokens !== pin.n_tokens) {
+    throw new Error(
+      `fail-closed: compare corpus missing pinned ATTN_PARALLEL_MIN_TOKENS crossover ${pin.id} n=${pin.n_tokens}`,
+    );
+  }
+  crossover.push({
+    id: row.id,
+    n_tokens: row.n_tokens,
+    max_abs: row.max_abs,
+    pass: row.pass,
+  });
 }
 
 let result = failed === 0 ? "pass" : "fail";
@@ -102,7 +119,8 @@ const receipt = {
   thread_report: lastThreadReport,
   qmatmul_kernel: lastQmatmulKernel,
   tight_max_abs: tight ? { expected: 0, got: maxAbs, pass: maxAbs === 0 } : null,
-  note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten.",
+  attn_crossover: { gate: 32, cases: crossover },
+  note: "Same crate compiled native (AVX2 integer kernels + shared mul+add exp/sin/cos) and wasm32 +simd128. Q4_K/Q5_K/Q6_K, Q@K dots, softmax/silu/V-mix, and RoPE use the same math on both backends. epsilon.json is not rewritten. Compare corpus is the 18 conformance cases plus attn-crossover-31/32/33 (n=31/32/33) pinning ATTN_PARALLEL_MIN_TOKENS=32. No kernel change.",
   cases: rows,
 };
 if (tightBlock) receipt.block = { tight_max_abs: tightBlock };
