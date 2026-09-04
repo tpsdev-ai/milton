@@ -101,9 +101,16 @@ CI run `33777431688` is the build of record for both threaded blobs.
 Glue (`milton_threads.js` / `milton_threads_relaxed.js`) is byte-identical.
 
 #59 adds `attnSetMinTokens` / `attnMinTokens` (env override of the A2 gate).
-That forces a remapped rebuild. CI remains the build of record for the
-threaded blobs (`-Z build-std` crate-hash). If this PR's byte-compare is
-red, replace the committed threads wasm with CI's uploaded artifact.
+That forces a remapped rebuild. CI run `33832387376` is the build of record
+for the four blobs below (local remap differed in bytes with no section-size
+delta — same #50 lesson). Glue is unchanged from the local wasm-bindgen emit.
+
+| artifact | sha256 | bytes |
+|---|---|---:|
+| `milton_bg.wasm` | `166e01edaa15d17da40c48c34be8f5b00b010e99cc249f93474e2a9628ad1935` | 636781 |
+| `milton_relaxed_bg.wasm` | `48e4e2c401c509f8b7230de91fd9a163953f032b69f49a1015495246dc9c7d4f` | 638371 |
+| `milton_threads_bg.wasm` | `602b8e600f18df73abe9c83ab8b68e7fa845a23f5d7a339aeea948479a9da579` | 621158 |
+| `milton_threads_relaxed_bg.wasm` | `22808601605268961688a33d989cf9937328a7178290bb6963cbbb9090d36e64` | 622210 |
 
 ## How the wasm is produced (builder-side only)
 
